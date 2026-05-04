@@ -28,18 +28,22 @@ cp ~/Downloads/google-services.json android/app/google-services.json
 
 このファイルは `.gitignore` に登録済みなのでコミットされない（個人用 Firebase プロジェクトの ID + API キーが入っている）。
 
-### 3. ビルド & 実機インストール
+### 3. `local.properties` に backend 設定を書く
+
+`android/local.properties`（AS が自動生成 + gitignored）に以下を追記:
+
+```properties
+CC_REMOTE_BACKEND_URL=https://claude-code-remote.<your-subdomain>.workers.dev
+CC_REMOTE_SHARED_SECRET=<backend/.dev.vars の SHARED_SECRET と同じ値>
+```
+
+ビルド時に Gradle が読んで `BuildConfig.BACKEND_URL` / `BuildConfig.SHARED_SECRET` に焼き込む。両方セットされていれば、初回起動時に自動で device 登録 → Home 画面直行。
+
+未設定（または fork して値を持たない人）の場合は Setup 画面で手動入力できる。
+
+### 4. ビルド & 実機インストール
 
 USB デバッグを有効にした端末を接続 → AS の Run ボタン（▶︎）でビルド & インストール & 起動。
-
-### 4. アプリでセットアップ
-
-起動すると Setup 画面が出る:
-
-- **Backend URL**: `https://claude-code-remote.<your-subdomain>.workers.dev`
-- **Shared Secret**: `backend/.dev.vars` の `SHARED_SECRET` の値
-
-「接続して登録」をタップすると、`/health` で疎通確認 → FCM トークン取得 → backend に device 登録。
 
 ### 5. 動作確認
 

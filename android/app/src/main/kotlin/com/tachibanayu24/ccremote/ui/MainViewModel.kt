@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.messaging.FirebaseMessaging
+import com.tachibanayu24.ccremote.BuildConfig
 import com.tachibanayu24.ccremote.data.BackendClient
 import com.tachibanayu24.ccremote.data.Config
 import com.tachibanayu24.ccremote.data.ConfigStore
@@ -33,7 +34,21 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            runCatching { _fcmToken.value = FirebaseMessaging.getInstance().token.await() }
+            // Auto-bootstrap from local.properties (build-time injected) if DataStore is empty.
+            if (ConfigStore.current(app) == null) {
+                val url = BuildConfig.BACKEND_URL
+                val secret = BuildConfig.SHARED_SECRET
+                if (url.isNotBlank() && secret.isNotBlank()) {
+                    ConfigStore.save(app, url, secret)
+                }
+            }
+            val token = runCatching { FirebaseMessaging.getInstance().token.await() }.getOrNull()
+                ?: return@launch
+            _fcmToken.value = token
+            val saved = ConfigStore.current(app) ?: return@launch
+            val client = BackendClient(saved)
+            runCatching { client.registerDevice(token, Build.MODEL) }
+            client.close()
         }
     }
 

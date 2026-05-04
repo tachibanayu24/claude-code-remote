@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -5,6 +7,13 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.google.services)
 }
+
+val localProperties = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
+fun localProp(key: String): String = localProperties.getProperty(key, "")
 
 android {
     namespace = "com.tachibanayu24.ccremote"
@@ -16,6 +25,9 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+
+        buildConfigField("String", "BACKEND_URL", "\"${localProp("CC_REMOTE_BACKEND_URL")}\"")
+        buildConfigField("String", "SHARED_SECRET", "\"${localProp("CC_REMOTE_SHARED_SECRET")}\"")
     }
 
     buildTypes {
@@ -33,6 +45,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     sourceSets["main"].java.srcDirs("src/main/kotlin")
 }

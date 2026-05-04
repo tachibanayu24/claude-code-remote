@@ -218,14 +218,17 @@ CREATE TABLE notifications (
 - [ ] FCM プロジェクト作成、service account JSON 取得
 - [ ] Android スケルトンアプリ作成、FCM トークン取得・表示
 
-### Phase 1: MVP（Approve/Deny まで、1〜2 週間）
+### Phase 1: MVP（Approve/Deny まで）✅ 完了
 - [x] Workers: `/approvals`, `/notifications`, `/devices` エンドポイント実装
 - [x] Workers: FCM v1 呼び出し（Web Crypto JWT 署名）
 - [x] PC hook script: PreToolUse のポーリング、Stop / Notification の fire-and-forget
 - [x] backend ↔ hook エンドツーエンド動作確認（curl で承認フロー疑似）
-- [x] Android スケルトン: Kotlin + Compose + Material 3 + FCM 受信 + アクション通知（ビルド検証は AS 側）
-- [ ] Android 実機での FCM data push 受信動作確認
-- [ ] フル E2E（PC hook → Android 通知タップ → hook が decision 受信）動作確認
+- [x] Android アプリ: Kotlin + Compose + Material 3 + FCM 受信 + アクション通知
+- [x] Android `local.properties` → `BuildConfig` 自動 bootstrap（Setup 画面スキップ）
+- [x] Android 実機での FCM data push 受信動作確認
+- [x] フル E2E（curl 承認作成 → 実機通知 → Approve タップ → D1 で `status=allow` 確認）
+
+残: PC 側 `~/.claude/settings.json` への hook 登録 → 実 Claude Code セッションでの自然な動作確認。これは PC 側の手動設定なので、ユーザーが任意のタイミングで実施。
 
 ### Phase 2: 履歴・ダッシュボード
 - [ ] Android アプリのメイン画面（履歴、フィルタ、セッション別表示）

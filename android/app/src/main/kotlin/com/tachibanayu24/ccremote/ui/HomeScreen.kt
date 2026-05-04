@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -32,8 +33,9 @@ fun HomeScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .safeDrawingPadding()
             .verticalScroll(rememberScrollState())
-            .padding(24.dp),
+            .padding(horizontal = 24.dp, vertical = 32.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         ClawdBanner()
@@ -79,10 +81,8 @@ private fun ClawdBanner() {
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("▐▛███▜▌", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-        Text("▜█████▛▘", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-        Text(" ▘▘ ▝▝", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
-        Spacer(Modifier.height(8.dp))
+        ClawdLogo(pixelSize = 8.dp)
+        Spacer(Modifier.height(12.dp))
         Text(
             text = "claude-code-remote",
             style = MaterialTheme.typography.titleLarge,
