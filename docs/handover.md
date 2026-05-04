@@ -223,9 +223,9 @@ CREATE TABLE notifications (
 - [x] Workers: FCM v1 呼び出し（Web Crypto JWT 署名）
 - [x] PC hook script: PreToolUse のポーリング、Stop / Notification の fire-and-forget
 - [x] backend ↔ hook エンドツーエンド動作確認（curl で承認フロー疑似）
-- [ ] Android: data push 受信 → ローカル通知 + action button
-- [ ] Android: action ボタン → BroadcastReceiver → backend POST
-- [ ] フル E2E（Android 含む）動作確認
+- [x] Android スケルトン: Kotlin + Compose + Material 3 + FCM 受信 + アクション通知（ビルド検証は AS 側）
+- [ ] Android 実機での FCM data push 受信動作確認
+- [ ] フル E2E（PC hook → Android 通知タップ → hook が decision 受信）動作確認
 
 ### Phase 2: 履歴・ダッシュボード
 - [ ] Android アプリのメイン画面（履歴、フィルタ、セッション別表示）
