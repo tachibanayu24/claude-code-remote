@@ -48,7 +48,7 @@ fun SetupScreen(
 
         Text(
             text = "claude-code-remote",
-            style = MaterialTheme.typography.headlineMedium,
+            style = MaterialTheme.typography.displayMedium,
             color = MaterialTheme.colorScheme.primary,
         )
         Text(
@@ -114,6 +114,6 @@ private fun ClawdHeader() {
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        ClawdLogo(pixelSize = 12.dp)
+        ClawdLogo(pixelSize = 7.dp)
     }
 }
