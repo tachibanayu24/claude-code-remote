@@ -39,9 +39,19 @@ class BackendClient(private val config: Config) {
         }
     }
 
-    suspend fun respondApproval(requestId: String, decision: String) {
+    suspend fun respondApproval(
+        requestId: String,
+        decision: String,
+        addToAllowlist: Boolean = false,
+    ) {
         http.post("${config.backendUrl}/v1/approvals/$requestId/respond") {
-            setBody(ApprovalRespondRequest(decision = decision, device_id = config.deviceId))
+            setBody(
+                ApprovalRespondRequest(
+                    decision = decision,
+                    device_id = config.deviceId,
+                    add_to_allowlist = addToAllowlist,
+                )
+            )
         }
     }
 

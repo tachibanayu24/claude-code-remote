@@ -1,0 +1,1 @@
+ALTER TABLE approvals ADD COLUMN add_to_allowlist INTEGER NOT NULL DEFAULT 0;

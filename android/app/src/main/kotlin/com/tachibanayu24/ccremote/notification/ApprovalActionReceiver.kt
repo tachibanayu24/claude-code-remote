@@ -15,6 +15,7 @@ class ApprovalActionReceiver : BroadcastReceiver() {
         if (intent.action != ACTION_RESPOND) return
         val requestId = intent.getStringExtra(EXTRA_REQUEST_ID) ?: return
         val decision = intent.getStringExtra(EXTRA_DECISION) ?: return
+        val addToAllowlist = intent.getBooleanExtra(EXTRA_ALLOWLIST, false)
         val notificationId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, -1)
 
         if (notificationId != -1) {
@@ -26,7 +27,7 @@ class ApprovalActionReceiver : BroadcastReceiver() {
             try {
                 val config = ConfigStore.current(context.applicationContext) ?: return@launch
                 val client = BackendClient(config)
-                runCatching { client.respondApproval(requestId, decision) }
+                runCatching { client.respondApproval(requestId, decision, addToAllowlist) }
                 client.close()
             } finally {
                 pending.finish()
@@ -38,6 +39,10 @@ class ApprovalActionReceiver : BroadcastReceiver() {
         const val ACTION_RESPOND = "com.tachibanayu24.ccremote.action.RESPOND"
         const val EXTRA_REQUEST_ID = "request_id"
         const val EXTRA_DECISION = "decision"
+        const val EXTRA_ALLOWLIST = "add_to_allowlist"
         const val EXTRA_NOTIFICATION_ID = "notification_id"
+
+        const val DECISION_ALLOW = "allow"
+        const val DECISION_DENY = "deny"
     }
 }

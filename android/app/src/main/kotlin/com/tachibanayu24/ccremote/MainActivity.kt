@@ -1,6 +1,7 @@
 package com.tachibanayu24.ccremote
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -14,8 +15,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.tachibanayu24.ccremote.notification.ApprovalActionReceiver
+import com.tachibanayu24.ccremote.notification.ApprovalPayload
+import com.tachibanayu24.ccremote.ui.ApprovalDialog
 import com.tachibanayu24.ccremote.ui.HomeScreen
 import com.tachibanayu24.ccremote.ui.MainViewModel
 import com.tachibanayu24.ccremote.ui.SetupScreen
@@ -25,10 +31,15 @@ class MainActivity : ComponentActivity() {
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* outcome ignored */ }
 
+    private lateinit var vm: MainViewModel
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         ensureNotificationPermission()
+
+        vm = ViewModelProvider(this, MainViewModel.Factory(application))[MainViewModel::class.java]
+        handleIntent(intent)
 
         setContent {
             CcRemoteTheme {
@@ -36,30 +47,66 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    val vm: MainViewModel = viewModel(factory = MainViewModel.Factory(application))
-                    val config by vm.config.collectAsState()
-                    val token by vm.fcmToken.collectAsState()
-                    val saveError by vm.saveError.collectAsState()
-                    val isWorking by vm.isWorking.collectAsState()
+                    val vmCompose: MainViewModel = viewModel(factory = MainViewModel.Factory(application))
+                    val config by vmCompose.config.collectAsState()
+                    val token by vmCompose.fcmToken.collectAsState()
+                    val saveError by vmCompose.saveError.collectAsState()
+                    val isWorking by vmCompose.isWorking.collectAsState()
+                    val approval by vmCompose.approval.collectAsState()
 
                     val current = config
                     if (current == null) {
                         SetupScreen(
                             isWorking = isWorking,
                             error = saveError,
-                            onSave = vm::saveConfig,
+                            onSave = vmCompose::saveConfig,
                         )
                     } else {
                         HomeScreen(
                             config = current,
                             fcmToken = token,
-                            onResetConfig = vm::resetConfig,
-                            onTestNotification = vm::sendTestNotification,
+                            onResetConfig = vmCompose::resetConfig,
+                            onTestNotification = vmCompose::sendTestNotification,
+                        )
+                    }
+
+                    approval?.let { payload ->
+                        ApprovalDialog(
+                            payload = payload,
+                            onAllow = { decide(payload, ApprovalActionReceiver.DECISION_ALLOW, false) },
+                            onAllowAlways = { decide(payload, ApprovalActionReceiver.DECISION_ALLOW, true) },
+                            onDeny = { decide(payload, ApprovalActionReceiver.DECISION_DENY, false) },
+                            onDismiss = { vmCompose.dismissApproval() },
                         )
                     }
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent?.action != ACTION_VIEW_APPROVAL) return
+        val payload = ApprovalPayload.fromBundle(intent.extras) ?: return
+        vm.showApproval(payload)
+        // Tap auto-cancels the notification, but be defensive in case Android delivered both.
+        NotificationManagerCompat.from(this).cancel(payload.notificationId)
+    }
+
+    private fun decide(payload: ApprovalPayload, decision: String, addToAllowlist: Boolean) {
+        val intent = Intent(this, ApprovalActionReceiver::class.java).apply {
+            action = ApprovalActionReceiver.ACTION_RESPOND
+            putExtra(ApprovalActionReceiver.EXTRA_REQUEST_ID, payload.requestId)
+            putExtra(ApprovalActionReceiver.EXTRA_DECISION, decision)
+            putExtra(ApprovalActionReceiver.EXTRA_ALLOWLIST, addToAllowlist)
+            putExtra(ApprovalActionReceiver.EXTRA_NOTIFICATION_ID, payload.notificationId)
+        }
+        sendBroadcast(intent)
+        vm.dismissApproval()
     }
 
     private fun ensureNotificationPermission() {
@@ -72,5 +119,9 @@ class MainActivity : ComponentActivity() {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
+    }
+
+    companion object {
+        const val ACTION_VIEW_APPROVAL = "com.tachibanayu24.ccremote.action.VIEW_APPROVAL"
     }
 }

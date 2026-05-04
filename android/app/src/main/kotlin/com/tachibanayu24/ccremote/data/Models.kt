@@ -20,6 +20,7 @@ data class ApprovalRespondRequest(
     val decision: String,
     val reason: String? = null,
     val device_id: String? = null,
+    val add_to_allowlist: Boolean = false,
 )
 
 @Serializable

@@ -7,66 +7,36 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.tachibanayu24.ccremote.MainActivity
 import com.tachibanayu24.ccremote.R
-import org.json.JSONObject
-import org.json.JSONException
 
 object NotificationFactory {
     const val CHANNEL_APPROVAL = "approval"
     const val CHANNEL_INFO = "info"
 
+    private const val PENDING_FLAGS =
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+
     fun showApproval(context: Context, data: Map<String, String>) {
-        val requestId = data["request_id"] ?: return
-        val project = data["project"] ?: "?"
-        val sessionLabel = data["session_label"].orEmpty()
-        val toolName = data["tool_name"] ?: "?"
-        val description = data["description"].orEmpty()
-        val inputPreview = data["input_preview"].orEmpty()
-        val detail = formatToolDetail(toolName, inputPreview)
-        val descClean = description.takeIf {
-            it.isNotBlank() && !(it.startsWith("{") && it.endsWith("}")) && it != detail
-        }
-        val titleHead = sessionLabel.ifBlank { project }
-        val actionLabel = descClean ?: toolName
-        val title = "⚠️ $titleHead · $actionLabel"
-        val subText = if (sessionLabel.isNotBlank()) project else null
+        val payload = ApprovalPayload.fromFcm(data) ?: return
+        val notificationId = payload.notificationId
 
-        val notificationId = requestId.hashCode()
-
-        val approveIntent = Intent(context, ApprovalActionReceiver::class.java).apply {
-            action = ApprovalActionReceiver.ACTION_RESPOND
-            putExtra(ApprovalActionReceiver.EXTRA_REQUEST_ID, requestId)
-            putExtra(ApprovalActionReceiver.EXTRA_DECISION, "allow")
-            putExtra(ApprovalActionReceiver.EXTRA_NOTIFICATION_ID, notificationId)
-        }
-        val denyIntent = Intent(context, ApprovalActionReceiver::class.java).apply {
-            action = ApprovalActionReceiver.ACTION_RESPOND
-            putExtra(ApprovalActionReceiver.EXTRA_REQUEST_ID, requestId)
-            putExtra(ApprovalActionReceiver.EXTRA_DECISION, "deny")
-            putExtra(ApprovalActionReceiver.EXTRA_NOTIFICATION_ID, notificationId)
-        }
-
-        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        val approvePending = PendingIntent.getBroadcast(context, notificationId * 2, approveIntent, flags)
-        val denyPending = PendingIntent.getBroadcast(context, notificationId * 2 + 1, denyIntent, flags)
-        val tapPending = PendingIntent.getActivity(
-            context,
-            notificationId * 2 + 2,
-            Intent(context, MainActivity::class.java),
-            flags,
-        )
+        val approve = actionPending(context, payload, ApprovalActionReceiver.DECISION_ALLOW, false, requestCode = notificationId * 4)
+        val approveAlways = actionPending(context, payload, ApprovalActionReceiver.DECISION_ALLOW, true, requestCode = notificationId * 4 + 1)
+        val deny = actionPending(context, payload, ApprovalActionReceiver.DECISION_DENY, false, requestCode = notificationId * 4 + 2)
+        val tap = tapPending(context, payload, requestCode = notificationId * 4 + 3)
 
         val notification = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
             .setSmallIcon(R.drawable.ic_clawd)
-            .setContentTitle(title)
-            .setContentText(detail.ifBlank { toolName })
-            .setStyle(NotificationCompat.BigTextStyle().bigText(detail.ifBlank { toolName }))
-            .setSubText(subText)
+            .setContentTitle(payload.title)
+            .setContentText(payload.detail.ifBlank { payload.toolName })
+            .setStyle(NotificationCompat.BigTextStyle().bigText(payload.detail.ifBlank { payload.toolName }))
+            .setSubText(payload.subText)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setAutoCancel(true)
-            .setContentIntent(tapPending)
-            .addAction(R.drawable.ic_check, "Allow", approvePending)
-            .addAction(R.drawable.ic_close, "Deny", denyPending)
+            .setContentIntent(tap)
+            .addAction(R.drawable.ic_check, "Allow", approve)
+            .addAction(R.drawable.ic_check, "Always", approveAlways)
+            .addAction(R.drawable.ic_close, "Deny", deny)
             .build()
 
         try {
@@ -74,19 +44,6 @@ object NotificationFactory {
         } catch (_: SecurityException) {
             // POST_NOTIFICATIONS not granted on Android 13+
         }
-    }
-
-    private fun formatToolDetail(toolName: String, inputPreview: String): String {
-        val parsed = runCatching { JSONObject(inputPreview) }.getOrNull()
-        val keyArg = when (toolName) {
-            "Bash" -> parsed?.optString("command")?.takeIf { it.isNotBlank() }
-            "Edit", "Write", "MultiEdit" -> parsed?.optString("file_path")?.takeIf { it.isNotBlank() }
-            "Read", "Glob" -> parsed?.optString("file_path")?.takeIf { it.isNotBlank() }
-                ?: parsed?.optString("pattern")?.takeIf { it.isNotBlank() }
-            "Grep" -> parsed?.optString("pattern")?.takeIf { it.isNotBlank() }
-            else -> null
-        }
-        return keyArg ?: inputPreview.ifBlank { toolName }
     }
 
     fun showInfo(context: Context, data: Map<String, String>) {
@@ -98,11 +55,11 @@ object NotificationFactory {
         val subText = if (sessionLabel.isNotBlank() && project.isNotBlank()) project else null
         val notificationId = ("info-" + System.currentTimeMillis()).hashCode()
 
-        val tapPending = PendingIntent.getActivity(
+        val tap = PendingIntent.getActivity(
             context,
             notificationId,
             Intent(context, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            PENDING_FLAGS,
         )
 
         val builder = NotificationCompat.Builder(context, CHANNEL_INFO)
@@ -111,16 +68,41 @@ object NotificationFactory {
             .setSubText(subText)
             .setPriority(if (kind == "completed") NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_LOW)
             .setAutoCancel(true)
-            .setContentIntent(tapPending)
+            .setContentIntent(tap)
         if (body.isNotBlank()) {
             builder.setContentText(body).setStyle(NotificationCompat.BigTextStyle().bigText(body))
         }
-        val notification = builder.build()
 
         try {
-            NotificationManagerCompat.from(context).notify(notificationId, notification)
+            NotificationManagerCompat.from(context).notify(notificationId, builder.build())
         } catch (_: SecurityException) {
             // ignore
         }
+    }
+
+    private fun actionPending(
+        context: Context,
+        payload: ApprovalPayload,
+        decision: String,
+        addToAllowlist: Boolean,
+        requestCode: Int,
+    ): PendingIntent {
+        val intent = Intent(context, ApprovalActionReceiver::class.java).apply {
+            action = ApprovalActionReceiver.ACTION_RESPOND
+            putExtra(ApprovalActionReceiver.EXTRA_REQUEST_ID, payload.requestId)
+            putExtra(ApprovalActionReceiver.EXTRA_DECISION, decision)
+            putExtra(ApprovalActionReceiver.EXTRA_ALLOWLIST, addToAllowlist)
+            putExtra(ApprovalActionReceiver.EXTRA_NOTIFICATION_ID, payload.notificationId)
+        }
+        return PendingIntent.getBroadcast(context, requestCode, intent, PENDING_FLAGS)
+    }
+
+    private fun tapPending(context: Context, payload: ApprovalPayload, requestCode: Int): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            action = MainActivity.ACTION_VIEW_APPROVAL
+            payload.writeToIntent(this)
+        }
+        return PendingIntent.getActivity(context, requestCode, intent, PENDING_FLAGS)
     }
 }

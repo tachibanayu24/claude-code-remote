@@ -11,6 +11,7 @@ import com.tachibanayu24.ccremote.BuildConfig
 import com.tachibanayu24.ccremote.data.BackendClient
 import com.tachibanayu24.ccremote.data.Config
 import com.tachibanayu24.ccremote.data.ConfigStore
+import com.tachibanayu24.ccremote.notification.ApprovalPayload
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -31,6 +32,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private val _isWorking = MutableStateFlow(false)
     val isWorking: StateFlow<Boolean> = _isWorking
+
+    private val _approval = MutableStateFlow<ApprovalPayload?>(null)
+    val approval: StateFlow<ApprovalPayload?> = _approval
+
+    fun showApproval(payload: ApprovalPayload) { _approval.value = payload }
+    fun dismissApproval() { _approval.value = null }
 
     init {
         viewModelScope.launch {
