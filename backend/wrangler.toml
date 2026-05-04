@@ -1,0 +1,18 @@
+name = "claude-code-remote"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+
+# D1 database binding.
+# `database_id` is account-specific. If forking this repo, run:
+#   npx wrangler d1 create claude-code-remote
+# and replace the id below with the output.
+[[d1_databases]]
+binding = "DB"
+database_name = "claude-code-remote"
+database_id = "4c89f4b7-002c-4d4e-8a68-be23ea6a1f0f"
+migrations_dir = "migrations"
+
+# Required secrets (set via `wrangler secret put <NAME>`):
+#   SHARED_SECRET            — bearer token shared with PC hook & Android app
+#   FCM_SERVICE_ACCOUNT_JSON — GCP service account JSON for FCM v1
+#   FCM_PROJECT_ID           — GCP project ID for FCM

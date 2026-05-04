@@ -1,0 +1,21 @@
+{
+  "name": "claude-code-remote-backend",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Cloudflare Workers backend for claude-code-remote",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "migrate:local": "wrangler d1 migrations apply DB --local",
+    "migrate:remote": "wrangler d1 migrations apply DB --remote"
+  },
+  "dependencies": {
+    "hono": "^4.12.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260504.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.0.0"
+  }
+}
