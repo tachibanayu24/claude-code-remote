@@ -50,8 +50,8 @@ fun HomeScreen(
     ) {
         ClawdBanner()
 
-        StatusCard(label = "BACKEND", value = config.backendUrl)
-        StatusCard(label = "DEVICE_ID", value = config.deviceId)
+        StatusCard(label = "BACKEND", value = config.backendUrl, revealable = true)
+        StatusCard(label = "DEVICE_ID", value = config.deviceId, revealable = true)
         StatusCard(
             label = "FCM_TOKEN",
             value = fcmToken ?: "(未取得)",
@@ -69,14 +69,6 @@ fun HomeScreen(
             onClick = onResetConfig,
             modifier = Modifier.fillMaxWidth(),
         ) { Text("設定をリセット") }
-
-        Spacer(Modifier.height(16.dp))
-
-        Text(
-            text = "通知が届くと、ロック画面でも Approve / Deny ボタンから直接応答できます。",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
