@@ -1,24 +1,64 @@
 # claude-code-remote
 
-Claude Code を複数セッション並行運用するときの通知・遠隔操作基盤。
+Claude Code を複数セッション並行運用するときの通知・遠隔操作基盤。Android アプリ + Cloudflare Workers backend + Claude Code Channels (permission relay) の3層構成。
 
-## 動機
+## 構成
 
-VS Code のターミナルタブで Claude Code を複数並行実行していると、入力待ち / 権限承認待ち / 処理完了 に気づきづらい。スマホ（Android）+ Fitbit に通知を飛ばしたい。最終的には承認の遠隔操作や追加指示送信もスマホから行いたい。
+```
+Claude Code (PC)
+  ├── Native permission dialog (CLI で従来どおり操作可)
+  └── MCP channel server (channel/channel.mjs, stdio subprocess)
+        ↓ permission_request
+        ↓ HTTP POST
+  Cloudflare Workers backend (backend/)
+        ↓ FCM push
+  Android app (android/)  ← Allow / Deny ボタンタップ
+        ↓ HTTP POST
+  Cloudflare Workers backend
+        ↓ poll で channel server が verdict 取得
+  MCP channel server emits notifications/claude/channel/permission
+        ↓
+  Claude Code が verdict 適用 (or PC で先に答えてればそっち)
+```
 
-## 現状の到達点（2026-05-04）
+PC native dialog と Phone の通知は **同時に live**。先に答えた方が勝ち、もう一方は自動的にキャンセルされる（Channels protocol が組み込みで処理）。
 
-- ntfy.sh (`https://ntfy.sh/claude-code-tachibanayu24`) でスマホ通知が動く状態
-- Android + Fitbit へのミラー通知も確認済み
-- iOS は集中モード等の制約で不安定（Android に絞って進める）
+## 起動
 
-## 進む方向
+```bash
+claude --dangerously-load-development-channels server:cc-remote
+```
 
-自作 Android アプリ + ローカルバックエンド構成で、以下を実現する:
+エイリアス推奨:
 
-1. 通知（応答完了 / 権限承認待ち / マイルストーン）
-2. スマホから Approve/Deny を直接押す（PreToolUse hook で待機 → stdout で decision を返す方式）
-3. 複数セッション一覧ダッシュボード
-4. （余裕があれば）スマホから追加プロンプト投入
+```bash
+alias claudec='claude --dangerously-load-development-channels server:cc-remote'
+```
 
-詳細は `docs/handover.md` 参照。
+`--dangerously-load-development-channels` は Channels research preview の機能で、approved allowlist に載るまで必要。Pro/Max ユーザは claude.ai login + v2.1.81+ で使える。
+
+## 設定ファイル
+
+- **`~/.claude.json`** — `mcpServers` に `cc-remote` 登録（channel server 起動）
+- **`~/.claude/hooks/.env`** — Backend URL + shared secret (chmod 600)
+- **`~/.claude/settings.json`** — Stop / Notification(idle_prompt) hooks
+
+## ディレクトリ
+
+| Path | 用途 |
+|---|---|
+| `channel/` | MCP channel server (Node.js, permission relay) |
+| `backend/` | Cloudflare Workers + Hono + D1 + FCM v1 |
+| `android/` | Kotlin + Jetpack Compose アプリ |
+| `hooks/` | Stop / Notification(idle_prompt) 用の hook script |
+| `docs/` | 設計ノート、セッションログ |
+
+## 主要設計
+
+- 言語: Android = Kotlin + Compose / Backend = TypeScript + Hono
+- ストレージ: Cloudflare D1
+- 通知: FCM v1 (Web Crypto で RS256 JWT 署名)
+- 認証: 共有 bearer token 1種類
+- Permission relay: Claude Code Channels (research preview)
+
+詳細は `docs/handover.md` および `docs/sessions/` 参照。

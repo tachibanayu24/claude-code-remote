@@ -28,6 +28,9 @@ app.post('/v1/devices/register', async (c) => {
     return c.json({ error: 'device_id and fcm_token required' }, 400)
   }
   const now = Math.floor(Date.now() / 1000)
+  await c.env.DB.prepare('DELETE FROM devices WHERE fcm_token = ? AND id != ?')
+    .bind(body.fcm_token, body.device_id)
+    .run()
   await c.env.DB.prepare(
     `INSERT INTO devices (id, fcm_token, name, registered_at) VALUES (?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET fcm_token = excluded.fcm_token,
@@ -43,25 +46,33 @@ app.post('/v1/devices/register', async (c) => {
 
 app.post('/v1/approvals', async (c) => {
   const body = await c.req.json<{
-    session_id: string
-    cwd: string
+    session_id?: string
+    cwd?: string
     project_name: string
+    session_label?: string
     tool_name: string
-    tool_input: unknown
+    description?: string
+    input_preview?: string
+    cc_request_id?: string
   }>()
   const id = crypto.randomUUID()
   const now = Math.floor(Date.now() / 1000)
+  const toolInput = JSON.stringify({
+    description: body.description ?? '',
+    input_preview: body.input_preview ?? '',
+    cc_request_id: body.cc_request_id ?? '',
+  })
   await c.env.DB.prepare(
     `INSERT INTO approvals (id, session_id, cwd, project_name, tool_name, tool_input, status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`
   )
     .bind(
       id,
-      body.session_id,
-      body.cwd,
+      body.session_id ?? '',
+      body.cwd ?? '',
       body.project_name,
       body.tool_name,
-      JSON.stringify(body.tool_input),
+      toolInput,
       now
     )
     .run()
@@ -76,9 +87,10 @@ app.post('/v1/approvals', async (c) => {
         type: 'approval_request',
         request_id: id,
         project: body.project_name,
+        session_label: body.session_label ?? '',
         tool_name: body.tool_name,
-        tool_summary: summarize(body.tool_name, body.tool_input),
-        session_id: body.session_id,
+        description: body.description ?? '',
+        input_preview: body.input_preview ?? '',
       },
     }).catch((e) => {
       console.error('FCM send failed (approval)', e instanceof Error ? e.message : e)
@@ -132,7 +144,67 @@ app.post('/v1/approvals/:id/respond', async (c) => {
     if (!existing) return c.json({ error: 'not found' }, 404)
     return c.json({ error: 'already resolved', status: existing.status }, 409)
   }
+
+  const devices = await c.env.DB.prepare('SELECT fcm_token FROM devices').all<{ fcm_token: string }>()
+  const tokens = (devices.results ?? []).map((d) => d.fcm_token)
+  const dismisses = tokens.map((token) =>
+    sendFcm(c.env, {
+      token,
+      data: {
+        type: 'approval_resolved',
+        request_id: id,
+        decision: body.decision,
+        resolved_by: body.device_id ?? '',
+      },
+    }).catch((e) => {
+      console.error('FCM dismiss failed', e instanceof Error ? e.message : e)
+    })
+  )
+  await Promise.allSettled(dismisses)
+
   return c.json({ ok: true, status: body.decision })
+})
+
+app.post('/v1/approvals/dismiss_pending', async (c) => {
+  const body = (await c.req.json<{ cwd?: string }>().catch(() => ({}))) as { cwd?: string }
+  const cwd = body.cwd
+  const now = Math.floor(Date.now() / 1000)
+  const params: unknown[] = [now]
+  let where = "status = 'pending'"
+  if (cwd) {
+    where += ' AND cwd = ?'
+    params.push(cwd)
+  }
+  const ids = await c.env.DB.prepare(`SELECT id FROM approvals WHERE ${where}`)
+    .bind(...(cwd ? [cwd] : []))
+    .all<{ id: string }>()
+  const dismissed = (ids.results ?? []).map((r) => r.id)
+  if (dismissed.length === 0) return c.json({ ok: true, dismissed: 0 })
+
+  await c.env.DB.prepare(`UPDATE approvals SET status = 'expired', resolved_at = ? WHERE ${where}`)
+    .bind(...params)
+    .run()
+
+  const devices = await c.env.DB.prepare('SELECT fcm_token FROM devices').all<{ fcm_token: string }>()
+  const tokens = (devices.results ?? []).map((d) => d.fcm_token)
+  const sends: Promise<unknown>[] = []
+  for (const id of dismissed) {
+    for (const token of tokens) {
+      sends.push(
+        sendFcm(c.env, {
+          token,
+          data: {
+            type: 'approval_resolved',
+            request_id: id,
+            decision: 'expired',
+            resolved_by: 'cli',
+          },
+        }).catch((e) => console.error('FCM dismiss failed', e instanceof Error ? e.message : e))
+      )
+    }
+  }
+  await Promise.allSettled(sends)
+  return c.json({ ok: true, dismissed: dismissed.length })
 })
 
 // ===== Notifications =====
@@ -142,6 +214,7 @@ app.post('/v1/notifications', async (c) => {
     session_id: string
     cwd: string
     project_name: string
+    session_label?: string
     kind: string
     title: string
     body?: string
@@ -174,6 +247,7 @@ app.post('/v1/notifications', async (c) => {
         type: 'info',
         kind: body.kind,
         project: body.project_name,
+        session_label: body.session_label ?? '',
         title: body.title,
         body: body.body ?? '',
         session_id: body.session_id,
@@ -186,24 +260,5 @@ app.post('/v1/notifications', async (c) => {
 
   return c.json({ ok: true, id, notified: tokens.length })
 })
-
-// ===== Helpers =====
-
-function summarize(toolName: string, toolInput: unknown): string {
-  if (typeof toolInput !== 'object' || toolInput === null) return ''
-  const input = toolInput as Record<string, unknown>
-  if (toolName === 'Bash' && typeof input.command === 'string') {
-    return input.command.slice(0, 200)
-  }
-  if ((toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') &&
-      typeof input.file_path === 'string') {
-    return input.file_path
-  }
-  try {
-    return JSON.stringify(toolInput).slice(0, 200)
-  } catch {
-    return ''
-  }
-}
 
 export default app

@@ -1,5 +1,6 @@
 package com.tachibanayu24.ccremote.notification
 
+import androidx.core.app.NotificationManagerCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.tachibanayu24.ccremote.data.BackendClient
@@ -31,6 +32,10 @@ class CcRemoteMessagingService : FirebaseMessagingService() {
         val data = message.data
         when (data["type"]) {
             "approval_request" -> NotificationFactory.showApproval(applicationContext, data)
+            "approval_resolved" -> {
+                val requestId = data["request_id"] ?: return
+                NotificationManagerCompat.from(applicationContext).cancel(requestId.hashCode())
+            }
             "info" -> NotificationFactory.showInfo(applicationContext, data)
         }
     }
