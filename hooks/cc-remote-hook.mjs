@@ -74,23 +74,54 @@ function makeClient(env) {
 
 const encodeCwd = (cwd) => cwd.replace(/[\/.]/g, '-')
 
-function getAiTitle(cwd, sessionId) {
-  if (!cwd || !sessionId) return ''
+function readSessionJsonl(cwd, sessionId) {
+  if (!cwd || !sessionId) return null
   try {
-    const jsonl = readFileSync(
+    return readFileSync(
       join(CLAUDE_HOME, 'projects', encodeCwd(cwd), `${sessionId}.jsonl`),
       'utf8'
     )
-    const lines = jsonl.split('\n')
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (!lines[i].includes('"ai-title"')) continue
-      try {
-        const parsed = JSON.parse(lines[i])
-        if (parsed.type === 'ai-title' && parsed.aiTitle) return parsed.aiTitle
-      } catch (_) {}
-    }
-  } catch (_) {}
+  } catch (_) {
+    return null
+  }
+}
+
+function getAiTitle(cwd, sessionId) {
+  const jsonl = readSessionJsonl(cwd, sessionId)
+  if (!jsonl) return ''
+  const lines = jsonl.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"ai-title"')) continue
+    try {
+      const parsed = JSON.parse(lines[i])
+      if (parsed.type === 'ai-title' && parsed.aiTitle) return parsed.aiTitle
+    } catch (_) {}
+  }
   return ''
+}
+
+/**
+ * Find the timestamp (ms) of the most recent external user prompt — i.e. a
+ * `user` entry whose content is plain text, not a `tool_result` injection.
+ * Returns null if not found.
+ */
+function getLastUserPromptMs(cwd, sessionId) {
+  const jsonl = readSessionJsonl(cwd, sessionId)
+  if (!jsonl) return null
+  const lines = jsonl.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]
+    if (!line.includes('"type":"user"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type !== 'user') continue
+      const c = e.message?.content
+      const isToolResult = Array.isArray(c) && c[0]?.type === 'tool_result'
+      if (isToolResult) continue
+      if (e.timestamp) return Date.parse(e.timestamp)
+    } catch (_) {}
+  }
+  return null
 }
 
 // ---------- Actions ----------
@@ -125,10 +156,22 @@ if (!env || !env.CC_REMOTE_BACKEND_URL || !env.CC_REMOTE_SHARED_SECRET) {
 const post = makeClient(env)
 const input = await readStdin()
 
+function shouldNotifyStop(input, env) {
+  // Skip the completion push for short turns. Threshold defaults to 3 min,
+  // overridable via CC_REMOTE_STOP_THRESHOLD_MS in the env file. If the start
+  // time can't be determined, notify to avoid silently dropping signals.
+  const startMs = getLastUserPromptMs(input.cwd, input.session_id)
+  if (startMs === null) return true
+  const thresholdMs = Number.parseInt(env.CC_REMOTE_STOP_THRESHOLD_MS ?? '180000', 10)
+  return Date.now() - startMs >= thresholdMs
+}
+
 switch (mode) {
   case 'stop':
     await dismissPending(post, input)
-    await notify(post, input, 'stop')
+    if (shouldNotifyStop(input, env)) {
+      await notify(post, input, 'stop')
+    }
     break
   case 'notify':
     await notify(post, input, 'notify')
