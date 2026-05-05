@@ -33,7 +33,14 @@ fun ApprovalDialog(
 ) {
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+        // Force the user to pick Allow / Always allow / Deny: dismissing via
+        // back/scrim would leave the PC terminal hanging on a request the
+        // backend still thinks is pending.
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+        ),
     ) {
         Surface(
             shape = RoundedCornerShape(16.dp),

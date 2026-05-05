@@ -1,4 +1,4 @@
-import { sendFcm } from './fcm'
+import { FcmInvalidTokenError, sendFcm } from './fcm'
 import type { FcmEnv } from './types'
 
 async function listFcmTokens(db: D1Database): Promise<string[]> {
@@ -8,18 +8,38 @@ async function listFcmTokens(db: D1Database): Promise<string[]> {
   return (rows.results ?? []).map((r) => r.fcm_token)
 }
 
+/**
+ * Fan-out to every registered device. Returns the count that *successfully*
+ * received the push (not the count attempted) so callers report a meaningful
+ * `notified` value. Tokens that FCM rejects as permanently invalid are
+ * pruned from the devices table so we don't keep retrying them forever.
+ */
 async function fanOut(
   env: FcmEnv,
+  db: D1Database,
   tokens: string[],
   data: Record<string, string>,
   errLabel: string
-): Promise<void> {
-  const sends = tokens.map((token) =>
-    sendFcm(env, { token, data }).catch((e) => {
-      console.error(`FCM ${errLabel} failed`, e instanceof Error ? e.message : e)
-    })
+): Promise<number> {
+  const results = await Promise.allSettled(
+    tokens.map((token) => sendFcm(env, { token, data }))
   )
-  await Promise.allSettled(sends)
+  let success = 0
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i]!
+    if (r.status === 'fulfilled') {
+      success++
+      continue
+    }
+    const reason = r.reason
+    if (reason instanceof FcmInvalidTokenError) {
+      console.warn(`FCM ${errLabel} prune ${reason.token.slice(0, 12)}…: ${reason.message}`)
+      await db.prepare('DELETE FROM devices WHERE fcm_token = ?').bind(reason.token).run().catch(() => {})
+      continue
+    }
+    console.error(`FCM ${errLabel} failed`, reason instanceof Error ? reason.message : reason)
+  }
+  return success
 }
 
 export async function notifyApprovalRequest(
@@ -28,8 +48,7 @@ export async function notifyApprovalRequest(
   data: Record<string, string>
 ): Promise<number> {
   const tokens = await listFcmTokens(db)
-  await fanOut(env, tokens, { type: 'approval_request', ...data }, 'approval_request')
-  return tokens.length
+  return fanOut(env, db, tokens, { type: 'approval_request', ...data }, 'approval_request')
 }
 
 export async function notifyApprovalResolved(
@@ -38,8 +57,7 @@ export async function notifyApprovalResolved(
   data: Record<string, string>
 ): Promise<number> {
   const tokens = await listFcmTokens(db)
-  await fanOut(env, tokens, { type: 'approval_resolved', ...data }, 'approval_resolved')
-  return tokens.length
+  return fanOut(env, db, tokens, { type: 'approval_resolved', ...data }, 'approval_resolved')
 }
 
 export async function notifyInfo(
@@ -48,6 +66,5 @@ export async function notifyInfo(
   data: Record<string, string>
 ): Promise<number> {
   const tokens = await listFcmTokens(db)
-  await fanOut(env, tokens, { type: 'info', ...data }, 'info')
-  return tokens.length
+  return fanOut(env, db, tokens, { type: 'info', ...data }, 'info')
 }

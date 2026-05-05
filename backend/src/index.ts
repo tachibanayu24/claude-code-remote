@@ -15,8 +15,26 @@ const app = new Hono<{ Bindings: Bindings }>()
 
 app.get('/health', (c) => c.json({ ok: true, ts: Date.now() }))
 
+async function timingSafeBearerEqual(provided: string | undefined, expected: string): Promise<boolean> {
+  if (!provided) return false
+  // Hash both sides to a fixed length, then compare byte-by-byte. Avoids
+  // length and prefix-time leaks from a naive string compare.
+  const enc = new TextEncoder()
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(provided)),
+    crypto.subtle.digest('SHA-256', enc.encode(expected)),
+  ])
+  const av = new Uint8Array(a)
+  const bv = new Uint8Array(b)
+  let diff = 0
+  for (let i = 0; i < av.length; i++) diff |= av[i]! ^ bv[i]!
+  return diff === 0
+}
+
 app.use('/v1/*', async (c, next) => {
-  if (c.req.header('Authorization') !== `Bearer ${c.env.SHARED_SECRET}`) {
+  const header = c.req.header('Authorization') ?? ''
+  const provided = header.startsWith('Bearer ') ? header.slice(7) : ''
+  if (!(await timingSafeBearerEqual(provided, c.env.SHARED_SECRET))) {
     return c.json({ error: 'unauthorized' }, 401)
   }
   await next()
@@ -129,24 +147,23 @@ app.post('/v1/approvals/:id/respond', async (c) => {
 })
 
 async function dismissPendingApprovals(db: D1Database, env: Bindings, cwd: string): Promise<number> {
-  const baseWhere = "status = 'pending'"
-  const where = cwd ? `${baseWhere} AND cwd = ?` : baseWhere
-  const args = cwd ? [cwd] : []
-  const ids = await db.prepare(`SELECT id FROM approvals WHERE ${where}`)
-    .bind(...args)
+  // cwd is required — '' would match every row. Callers must validate.
+  if (!cwd) return 0
+  const ids = await db.prepare("SELECT id FROM approvals WHERE status = 'pending' AND cwd = ?")
+    .bind(cwd)
     .all<{ id: string }>()
   const dismissed = (ids.results ?? []).map((r) => r.id)
   if (dismissed.length === 0) return 0
-  await db.prepare(`UPDATE approvals SET status = 'expired', resolved_at = ? WHERE ${where}`)
-    .bind(nowSec(), ...args)
+  await db.prepare("UPDATE approvals SET status = 'expired', resolved_at = ? WHERE status = 'pending' AND cwd = ?")
+    .bind(nowSec(), cwd)
     .run()
-  for (const id of dismissed) {
-    await notifyApprovalResolved(env, db, {
+  await Promise.all(dismissed.map((id) =>
+    notifyApprovalResolved(env, db, {
       request_id: id,
       decision: 'expired',
       resolved_by: 'cli',
     })
-  }
+  ))
   return dismissed.length
 }
 
@@ -200,8 +217,11 @@ app.post('/v1/hook/stop', async (c) => {
 })
 
 app.post('/v1/hook/posttool', async (c) => {
-  const body = await c.req.json<HookPosttoolRequest>().catch(() => ({ cwd: '' } as HookPosttoolRequest))
-  const dismissed = await dismissPendingApprovals(c.env.DB, c.env, body.cwd ?? '')
+  const body = await c.req.json<HookPosttoolRequest>().catch(() => null)
+  // Reject empty cwd: dismissPendingApprovals('') would expire pending rows
+  // for *every* session, which collapses the multi-session use case.
+  if (!body?.cwd) return c.json({ error: 'cwd required' }, 400)
+  const dismissed = await dismissPendingApprovals(c.env.DB, c.env, body.cwd)
   return c.json({ ok: true, dismissed })
 })
 

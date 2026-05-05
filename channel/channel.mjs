@@ -12,7 +12,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -125,10 +125,11 @@ function deriveAllowPattern(toolName, inputPreview) {
     const base = firstWord.split('/').pop() ?? firstWord
     return `Bash(${base}:*)`
   }
-  if ((toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') &&
-      typeof parsed.file_path === 'string') {
-    return `${toolName}(${parsed.file_path})`
-  }
+  // Edit/Write/MultiEdit deliberately omitted: CC's allowlist matcher takes
+  // glob patterns, not literal file paths, so `Edit(/exact/file.kt)` would
+  // only ever match that one file — the user wants tool-wide always-allow,
+  // and we don't have enough context here to build a sensible glob. Better
+  // to keep prompting than to silently lock the allowlist to a single path.
   if (toolName === 'WebFetch' && typeof parsed.url === 'string') {
     try {
       const host = new URL(parsed.url).host
@@ -153,13 +154,16 @@ function appendAllowPattern(cwd, pattern) {
   }
   json.permissions ??= {}
   json.permissions.allow ??= []
-  if (!json.permissions.allow.includes(pattern)) {
-    json.permissions.allow.push(pattern)
-  } else {
-    return false
-  }
+  if (json.permissions.allow.includes(pattern)) return false
+  json.permissions.allow.push(pattern)
   mkdirSync(dirname(settingsPath), { recursive: true })
-  writeFileSync(settingsPath, JSON.stringify(json, null, 2) + '\n')
+  // Atomic write: tmp + rename. CC itself also writes this file (e.g. on
+  // /permissions add), so a non-atomic write can race and lose entries.
+  // Rename-into-place is atomic on POSIX; collisions degrade to "last
+  // writer wins" rather than "file truncated mid-write".
+  const tmpPath = `${settingsPath}.cc-remote.${process.pid}.${Date.now()}.tmp`
+  writeFileSync(tmpPath, JSON.stringify(json, null, 2) + '\n')
+  renameSync(tmpPath, settingsPath)
   return true
 }
 

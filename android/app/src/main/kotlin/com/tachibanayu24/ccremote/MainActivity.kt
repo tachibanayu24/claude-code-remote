@@ -96,6 +96,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // Replace the activity's stored intent so a later config-change
+        // recreation reads the freshly-arrived approval/completion, not the
+        // launcher intent we started with.
+        setIntent(intent)
         handleIntent(intent)
     }
 

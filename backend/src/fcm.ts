@@ -90,6 +90,16 @@ export interface FcmMessage {
   data: Record<string, string>
 }
 
+/**
+ * Thrown when FCM rejects a token as permanently invalid (UNREGISTERED /
+ * INVALID_ARGUMENT). Callers should remove the token from their device list.
+ */
+export class FcmInvalidTokenError extends Error {
+  constructor(readonly token: string, readonly status: number, readonly detail: string) {
+    super(`FCM token rejected (${status}): ${detail}`)
+  }
+}
+
 export async function sendFcm(
   env: { FCM_SERVICE_ACCOUNT_JSON: string; FCM_PROJECT_ID: string },
   message: FcmMessage
@@ -104,8 +114,13 @@ export async function sendFcm(
     },
     body: JSON.stringify({ message }),
   })
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`FCM send failed: ${res.status} ${err}`)
+  if (res.ok) return
+  const err = await res.text()
+  // FCM v1 returns 404 for UNREGISTERED and 400 for INVALID_ARGUMENT (bad
+  // token format). Both mean the token will never work — surface as a typed
+  // error so the caller can prune the device.
+  if (res.status === 404 || (res.status === 400 && /INVALID_ARGUMENT|registration token/i.test(err))) {
+    throw new FcmInvalidTokenError(message.token, res.status, err)
   }
+  throw new Error(`FCM send failed: ${res.status} ${err}`)
 }
