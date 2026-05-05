@@ -13,10 +13,11 @@
 
 - MVP に加え **双方向操作** まで完了。承認 / 完了通知の受信、inline 承認、スマホからの prompt 送信、in-flight assistant text の live 表示、通知 tap で詳細画面遷移までエンドツーエンドで動く
 - バックエンド: Cloudflare Workers + Hono + D1 + FCM v1 にデプロイ済み (`claude-code-remote.<subdomain>.workers.dev`)
-- Android アプリ: Kotlin + Compose + Material 3。ホーム = セッション一覧（state dot）、タップで詳細画面（チャットストリーム + inline 承認 + prompt 入力バー）。popup ダイアログは廃止
+- Android アプリ: Kotlin + Compose + Material 3。ホーム = セッション一覧（state dot + pull-to-refresh + 凡例）、タップで詳細画面（チャットストリーム + inline 承認 + prompt 入力バー、コピー可能、in-flight pulse）。popup ダイアログは廃止
 - PC 側: hooks (Stop / PostToolUse) と MCP channel server (`channel/channel.mjs`)。channel が permission relay + heartbeat (3s) + queued prompt drain を担う
 - 承認は **Claude Code Channels の permission relay**、追加 prompt は **Channels inbound `notifications/claude/channel`** を採用（PreToolUse ポーリング案は廃止）
-- 設計の経緯は [`sessions/2026-05-04_実装方針確定.md`](./sessions/2026-05-04_実装方針確定.md) と [`sessions/2026-05-05_channels方針確定.md`](./sessions/2026-05-05_channels方針確定.md)
+- 全層リファクタ済み（2026-05-05）: backend を route 単位に分割 + `dismissPendingApprovals` を `RETURNING` でアトミック化 + cleanup を `waitUntil`、jsonl パーサーを `hooks/lib/` に集約、Android は `BackendClientHolder` でクライアントを singleton 化 + `UiState` に集約 + `Screen` sealed class でナビ管理 + `FLAG_SECURE` / DataStore backup 除外 / R8 minify。詳細はセッションログ参照
+- 設計の経緯は [`sessions/2026-05-04_実装方針確定.md`](./sessions/2026-05-04_実装方針確定.md) と [`sessions/2026-05-05_channels方針確定.md`](./sessions/2026-05-05_channels方針確定.md)、リファクタ詳細は [`sessions/2026-05-05_全層リファクタ.md`](./sessions/2026-05-05_全層リファクタ.md)
 
 ## 3. アーキテクチャ
 
@@ -156,7 +157,7 @@ PostToolUse hook も `/v1/hook/posttool` にだけ POST してその cwd の pen
 
 ## 6. データモデル (D1)
 
-migration は `backend/migrations/` に番号付きで配置（`0001_initial.sql` から `0006_current_assistant_text.sql`）。スキーマの正は migration ファイル群、以下は要約:
+migration は `backend/migrations/` に番号付きで配置（`0001_initial.sql` から `0009_index_approvals_cwd.sql`）。スキーマの正は migration ファイル群、以下は要約:
 
 - **devices** — `id` (UUID), `fcm_token`, `name`, `registered_at`
 - **approvals** — `id`, `session_id`, `cwd`, `project_name`, `tool_name`, `tool_input` (JSON), `status` ∈ `pending/allow/deny/expired`, `add_to_allowlist`, `created_at`, `resolved_at`, `resolved_by`
@@ -257,6 +258,25 @@ PreToolUse は廃止（Channels permission relay が肩代わり）。Stop と P
 - [x] 詳細画面の inline 承認カード（Allow / Always / Deny）+ コマンド本文表示
 - [x] CC が user 扱いで書く synthetic エントリ（compact summary、slash command echo、bash IO 等）のフィルタ
 - [x] IME 出現時は system pan に任せ最新チャットが隠れないレイアウト
+
+### Phase 3.5: 全層リファクタ ✅ 完了 (2026-05-05)
+- [x] backend を `routes/{devices,approvals,sessions,hooks,prompts}.ts` に分割、auth は `auth.ts`
+- [x] `dismissPendingApprovals` を `UPDATE ... RETURNING` でアトミック化 (TOCTOU race 解消)
+- [x] cleanup-on-read を `c.executionCtx.waitUntil(...)` に切り替え GET の HTTP セマンティクスを保つ
+- [x] D1 batch で sessions/turns/approvals/prompts の N+1 を解消、`add_to_allowlist` の boolean 正規化
+- [x] FCM v1 の token cache に single-flight、INVALID_REGISTRATION/UNREGISTERED の判定を JSON ベース化、token prune の bulk 化
+- [x] migration 0007: `approvals.reason` (dead column) 削除、0008: `idx_turns_ended`、0009: `idx_approvals_cwd_status`
+- [x] channel.mjs と cc-remote-hook.mjs の jsonl パーサ群 (8 関数) を `hooks/lib/{jsonl,env,cwd}.mjs` に集約。hook 側は `transcript_path` を直接利用
+- [x] channel.mjs の `pollAndEmit` に `AbortSignal.timeout`、hook の HTTP error / config 欠損を stderr に明示
+- [x] Android: `BackendClient` を `BackendClientHolder` で singleton 化（OkHttp connection pool 再利用）
+- [x] Android: `MainViewModel` の MutableStateFlow 9 本を `UiState` data class 1 本に集約、`init { }` 統合
+- [x] Android: `Screen` sealed class でナビ管理、`MainActivity` は `by viewModels()` で VM 二重生成を解消
+- [x] Android: `MessagingService` / `BroadcastReceiver` の `CoroutineScope` を lifecycle 紐付け
+- [x] Android: `NotificationFactory` の info ID を `AtomicInteger`、CATEGORY を `EVENT` に
+- [x] Android UX: `HomeScreen` に PullToRefreshBox + 状態凡例 + a11y semantics、`SessionDetailScreen` に SelectionContainer + in-flight pulse + haptic + last_heartbeat タイマー、`ChatMarkdown` に `LinkAnnotation.Url`
+- [x] Android security: `SettingsScreen` に `FLAG_SECURE`、`data_extraction_rules.xml` / `backup_rules.xml` を DataStore (`datastore/...preferences_pb`) に修正
+- [x] Android build: release を `isMinifyEnabled = true` + ProGuard rules (kotlinx.serialization / Ktor / Firebase / Compose)
+- [x] `Manifest tools:targetApi` を 35 に整合、`ConfigStore.flow` で `IOException` を catch
 
 ### Phase 4+: future work
 - 詳細は [`widget-plan.md`](./widget-plan.md)
