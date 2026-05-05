@@ -169,7 +169,7 @@ fun SessionDetailScreen(
                     // alpha so they don't feel like opaque islands.
                     modifier = Modifier
                         .fillMaxSize()
-                        .alpha(0.72f),
+                        .alpha(0.82f),
                     state = listState,
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(20.dp),
