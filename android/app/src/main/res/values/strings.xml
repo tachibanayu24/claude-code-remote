@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">cc-remote</string>
+    <string name="widget_label">cc-remote sessions</string>
+    <string name="widget_description">Active Claude Code sessions at a glance</string>
 </resources>

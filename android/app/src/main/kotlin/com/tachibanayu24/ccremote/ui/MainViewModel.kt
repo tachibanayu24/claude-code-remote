@@ -13,6 +13,7 @@ import com.tachibanayu24.ccremote.data.Config
 import com.tachibanayu24.ccremote.data.ConfigStore
 import com.tachibanayu24.ccremote.data.Session
 import com.tachibanayu24.ccremote.data.SessionDetailResponse
+import com.tachibanayu24.ccremote.widget.WidgetSyncWorker
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -149,6 +150,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             try {
                 val list = client.listSessions()
                 _uiState.update { it.copy(sessions = list) }
+                // Cheap to enqueue; the worker handles dedup. Keeps the
+                // home-screen widget in sync with manual pull-to-refresh.
+                WidgetSyncWorker.enqueueOnce(app)
             } finally {
                 _uiState.update { it.copy(isRefreshing = false) }
             }

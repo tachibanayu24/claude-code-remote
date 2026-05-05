@@ -5,6 +5,7 @@ import androidx.core.app.NotificationManagerCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.tachibanayu24.ccremote.data.BackendClientHolder
+import com.tachibanayu24.ccremote.widget.WidgetSyncWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
@@ -37,10 +38,16 @@ class CcRemoteMessagingService : FirebaseMessagingService() {
         when (data["type"]) {
             "approval_request" -> NotificationFactory.showApproval(applicationContext, data)
             "approval_resolved" -> {
-                val requestId = data["request_id"] ?: return
-                NotificationManagerCompat.from(applicationContext).cancel(requestId.hashCode())
+                data["request_id"]?.let { requestId ->
+                    NotificationManagerCompat.from(applicationContext).cancel(requestId.hashCode())
+                }
             }
             "info" -> NotificationFactory.showInfo(applicationContext, data)
         }
+        // Every recognized event changes session state visible to the widget
+        // (new pending approval, resolved approval, completion). Trigger a
+        // one-shot sync so the home screen catches up without waiting for
+        // the 15-minute periodic worker.
+        WidgetSyncWorker.enqueueOnce(applicationContext)
     }
 }
