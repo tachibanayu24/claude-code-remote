@@ -11,12 +11,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import com.tachibanayu24.ccremote.ui.HomeScreen
 import com.tachibanayu24.ccremote.ui.MainViewModel
@@ -24,6 +27,8 @@ import com.tachibanayu24.ccremote.ui.Screen
 import com.tachibanayu24.ccremote.ui.SessionDetailScreen
 import com.tachibanayu24.ccremote.ui.SettingsScreen
 import com.tachibanayu24.ccremote.ui.SetupScreen
+import com.tachibanayu24.ccremote.ui.theme.BgGradientBottom
+import com.tachibanayu24.ccremote.ui.theme.BgGradientTop
 import com.tachibanayu24.ccremote.ui.theme.CcRemoteTheme
 
 class MainActivity : ComponentActivity() {
@@ -40,9 +45,18 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             CcRemoteTheme {
+                // Surface keeps the Material content-color resolution working
+                // (so default Icon tints / Text colors stay correct) but its
+                // own fill is transparent — the gradient brush behind it is
+                // what actually paints the app background.
                 Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(listOf(BgGradientTop, BgGradientBottom)),
+                        ),
+                    color = Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.onBackground,
                 ) {
                     val config by vm.config.collectAsState()
                     val state by vm.uiState.collectAsState()

@@ -147,7 +147,7 @@ fun SessionDetailScreen(
             ClawdLogo(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .alpha(0.08f),
+                    .alpha(0.18f),
                 pixelSize = 10.dp,
                 interactive = false,
             )
