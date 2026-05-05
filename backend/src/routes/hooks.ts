@@ -19,6 +19,9 @@ app.post('/stop', async (c) => {
   const toolSummary = body.tool_summary && body.tool_summary.length > 0
     ? JSON.stringify(body.tool_summary)
     : null
+  const toolCalls = body.tool_calls && body.tool_calls.length > 0
+    ? JSON.stringify(body.tool_calls)
+    : null
   const dryRun = body.dry_run === true
 
   // Dismiss only this session's pending approvals — leave concurrent CCs in
@@ -32,8 +35,8 @@ app.post('/stop', async (c) => {
   if (!dryRun && cwd && sessionId) {
     await c.env.DB.batch([
       c.env.DB.prepare(
-        `INSERT INTO turns (id, cwd, session_id, user_prompt, assistant_text, tool_summary, elapsed_ms, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO turns (id, cwd, session_id, user_prompt, assistant_text, tool_summary, tool_calls, elapsed_ms, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
         turnId,
         cwd,
@@ -41,6 +44,7 @@ app.post('/stop', async (c) => {
         userPrompt || null,
         fullMessage || null,
         toolSummary,
+        toolCalls,
         elapsedMs,
         nowSec(),
       ),

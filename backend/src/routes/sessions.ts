@@ -132,7 +132,7 @@ app.get('/:sid/turns', async (c) => {
 
   const detailBatch = await c.env.DB.batch<unknown>([
     c.env.DB.prepare(
-      `SELECT id, user_prompt, assistant_text, tool_summary, elapsed_ms, ended_at
+      `SELECT id, user_prompt, assistant_text, tool_summary, tool_calls, elapsed_ms, ended_at
        FROM turns WHERE session_id = ? ORDER BY ended_at DESC LIMIT ?`
     ).bind(sid, limit),
     c.env.DB.prepare(
@@ -162,6 +162,7 @@ app.get('/:sid/turns', async (c) => {
     user_prompt: r.user_prompt,
     assistant_text: r.assistant_text,
     tool_summary: r.tool_summary ? JSON.parse(r.tool_summary) : [],
+    tool_calls: r.tool_calls ? JSON.parse(r.tool_calls) : [],
     elapsed_ms: r.elapsed_ms,
     ended_at: r.ended_at,
   }))

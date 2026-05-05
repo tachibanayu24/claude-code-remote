@@ -35,6 +35,14 @@ export interface ToolUsage {
   count: number
 }
 
+export interface ToolCall {
+  name: string
+  // Free-form: passed through from CC's jsonl. Bash → {command}, Edit →
+  // {file_path, old_string, new_string}, MultiEdit → {file_path, edits: [...]},
+  // Read/Glob → {file_path or pattern}, etc. Stored as JSON in turns.tool_calls.
+  input: Record<string, unknown>
+}
+
 export interface HookStopRequest {
   session_id: string
   cwd: string
@@ -43,6 +51,7 @@ export interface HookStopRequest {
   full_message?: string
   user_prompt?: string
   tool_summary?: ToolUsage[]
+  tool_calls?: ToolCall[]
   // Dev-only: skip the FCM push and D1 insert; return what would have been sent.
   // Used by smoke tests so the phone doesn't get buzzed.
   dry_run?: boolean
@@ -83,6 +92,7 @@ export interface TurnRow {
   user_prompt: string | null
   assistant_text: string | null
   tool_summary: string | null  // JSON-encoded ToolUsage[]
+  tool_calls: string | null  // JSON-encoded ToolCall[]
   elapsed_ms: number | null
   ended_at: number
 }
