@@ -8,16 +8,26 @@
 // drops the rest). When the phone responds with `add_to_allowlist`, the
 // matching tool pattern is appended to the project-level
 // `.claude/settings.local.json` so future invocations skip the prompt.
+//
+// All jsonl parsing lives in `../hooks/lib/jsonl.mjs`, shared with the Stop
+// hook so both layers stay in sync.
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const CLAUDE_HOME = join(homedir(), '.claude')
-const ENV_PATH = process.env.CC_REMOTE_ENV ?? join(CLAUDE_HOME, 'hooks/.env')
+import { CLAUDE_HOME, loadEnv } from '../hooks/lib/env.mjs'
+import {
+  aiTitleFromJsonl,
+  assistantTextsAfterFromJsonl,
+  hasEndTurnAfter,
+  jsonlPath,
+  lastUserPromptFromJsonl,
+} from '../hooks/lib/jsonl.mjs'
+
 const POLL_INTERVAL_MS = 1000
 const POLL_TIMEOUT_MS = 5 * 60 * 1000
 const SESSION_LABEL_TTL_MS = 5_000
@@ -27,28 +37,15 @@ const SESSION_LABEL_TTL_MS = 5_000
 const HEARTBEAT_INTERVAL_MS = 3_000
 const PROMPT_POLL_INTERVAL_MS = 2_000
 
+// Make sure relative imports work even when this file is invoked via symlink.
+// (Not strictly needed today since we use `import` paths, but useful guard.)
+void fileURLToPath(import.meta.url)
+
 const log = (...args) => process.stderr.write(`[cc-remote] ${args.join(' ')}\n`)
 
 // ---------- Config ----------
 
-function loadEnv() {
-  let text
-  try {
-    text = readFileSync(ENV_PATH, 'utf8')
-  } catch (e) {
-    log(`cannot read ${ENV_PATH}: ${e.message}`)
-    return null
-  }
-  const env = {}
-  for (const line of text.split('\n')) {
-    if (line.trim().startsWith('#')) continue
-    const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/)
-    if (m) env[m[1]] = m[2].replace(/^["'](.*)["']$/, '$1')
-  }
-  return env
-}
-
-const env = loadEnv() ?? {}
+const env = loadEnv(log) ?? {}
 const BACKEND = env.CC_REMOTE_BACKEND_URL?.replace(/\/$/, '') ?? ''
 const SECRET = env.CC_REMOTE_SHARED_SECRET ?? ''
 const PROJECT = basename(process.cwd())
@@ -64,11 +61,12 @@ const apiHeaders = {
   'Content-Type': 'application/json',
 }
 
-async function apiPost(path, payload) {
+async function apiPost(path, payload, signal) {
   return fetch(`${BACKEND}${path}`, {
     method: 'POST',
     headers: apiHeaders,
     body: JSON.stringify(payload),
+    signal,
   })
 }
 
@@ -78,8 +76,6 @@ async function apiGet(path, signal) {
 
 // ---------- Session lookup (sessionId / ai-title / jsonl mtime) ----------
 
-const encodeCwd = (cwd) => cwd.replace(/[\/.]/g, '-')
-
 /**
  * Resolve our parent CC's sessionId via `~/.claude/sessions/<ppid>.json`.
  * CC writes this file at startup with `{sessionId, cwd}`. Returns null if
@@ -88,151 +84,11 @@ const encodeCwd = (cwd) => cwd.replace(/[\/.]/g, '-')
 function readPpidSession() {
   try {
     const sess = JSON.parse(
-      readFileSync(join(CLAUDE_HOME, 'sessions', `${process.ppid}.json`), 'utf8')
+      readFileSync(join(CLAUDE_HOME, 'sessions', `${process.ppid}.json`), 'utf8'),
     )
     if (sess.sessionId && sess.cwd) return sess
   } catch (_) {}
   return null
-}
-
-function jsonlPath(cwd, sessionId) {
-  return join(CLAUDE_HOME, 'projects', encodeCwd(cwd), `${sessionId}.jsonl`)
-}
-
-function aiTitleFromJsonl(jsonl) {
-  const lines = jsonl.split('\n')
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (!lines[i].includes('"ai-title"')) continue
-    try {
-      const parsed = JSON.parse(lines[i])
-      if (parsed.type === 'ai-title' && parsed.aiTitle) return parsed.aiTitle
-    } catch (_) {}
-  }
-  return ''
-}
-
-// Synthetic wrappers CC injects as `user` entries — slash command echoes,
-// bash-mode IO, system reminders, etc. Skip them when looking for the
-// "most recent external user prompt": they aren't what the human typed.
-const SYNTHETIC_USER_WRAPPERS = [
-  '<command-name>', '<command-message>', '<command-args>',
-  '<local-command-stdout>', '<local-command-caveat>',
-  '<bash-input>', '<bash-stdout>',
-  '<persisted-output>', '<system-reminder>', '<task-notification>',
-]
-
-const CHANNEL_WRAPPER_RE = /^<channel\b[^>]*>\n?([\s\S]*?)\n?<\/channel>\s*$/
-
-/**
- * Channel-injected prompts (phone → channel.mjs → CC) are written with
- * `isMeta: true` and `origin.kind === 'channel'` because CC treats them as
- * out-of-band notifications. They ARE real user input — strip the
- * `<channel ...>...</channel>` wrapper and surface the inner content.
- */
-function isChannelInjectedPrompt(e) {
-  return e.origin?.kind === 'channel'
-}
-
-function isSyntheticUserEntry(e) {
-  if (isChannelInjectedPrompt(e)) return false  // real user input via phone
-  if (e.isMeta || e.isCompactSummary || e.isVisibleInTranscriptOnly) return true
-  const c = e.message?.content
-  if (Array.isArray(c) && c[0]?.type === 'tool_result') return true
-  const text = typeof c === 'string'
-    ? c
-    : Array.isArray(c)
-      ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('')
-      : ''
-  const head = text.trimStart()
-  return SYNTHETIC_USER_WRAPPERS.some((w) => head.startsWith(w))
-}
-
-function userEntryText(e) {
-  const c = e.message?.content
-  const raw = typeof c === 'string'
-    ? c
-    : Array.isArray(c)
-      ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('\n')
-      : ''
-  if (isChannelInjectedPrompt(e)) {
-    const m = raw.match(CHANNEL_WRAPPER_RE)
-    if (m) return m[1].trim()
-  }
-  return raw.trim()
-}
-
-/**
- * Find the most recent external user prompt — i.e. what the human actually
- * typed at the prompt (terminal or phone). Skips tool_result injections,
- * compact-summary re-injections, slash-command echoes, bash-mode IO, and
- * other synthetic `user` entries CC writes for its own bookkeeping.
- * Channel-injected prompts (phone) are kept and unwrapped. Returns the
- * text and its line index (so callers can walk forward) or null if none.
- */
-function lastUserPromptFromJsonl(jsonl) {
-  if (!jsonl) return null
-  const lines = jsonl.split('\n')
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]
-    if (!line.includes('"type":"user"')) continue
-    try {
-      const e = JSON.parse(line)
-      if (e.type !== 'user') continue
-      if (isSyntheticUserEntry(e)) continue
-      return { text: userEntryText(e), lineIndex: i }
-    } catch (_) {}
-  }
-  return null
-}
-
-/**
- * True if any assistant entry after `fromLineIndex` carries
- * `stop_reason: "end_turn"` — i.e. CC has finished narrating this turn.
- */
-function hasEndTurnAfter(jsonl, fromLineIndex) {
-  if (!jsonl) return false
-  const lines = jsonl.split('\n')
-  for (let i = fromLineIndex + 1; i < lines.length; i++) {
-    const line = lines[i]
-    if (!line.includes('"stop_reason":"end_turn"')) continue
-    try {
-      const e = JSON.parse(line)
-      if (e.type === 'assistant' && e.message?.stop_reason === 'end_turn') return true
-    } catch (_) {}
-  }
-  return false
-}
-
-/**
- * Concatenate every assistant text block emitted after `fromLineIndex`,
- * prefixed with `● ` and joined with blank lines — mirrors how CC renders
- * interleaved chunks in the terminal. Used to surface the live, in-flight
- * narration on the phone before Stop fires.
- *
- * U+25CF (BLACK CIRCLE) instead of CC's U+23FA: the latter has emoji
- * presentation on Android and would render as a record button glyph.
- */
-function assistantTextsAfterFromJsonl(jsonl, fromLineIndex) {
-  if (!jsonl) return ''
-  const lines = jsonl.split('\n')
-  const chunks = []
-  for (let i = Math.max(0, fromLineIndex + 1); i < lines.length; i++) {
-    const line = lines[i]
-    if (!line.includes('"type":"assistant"')) continue
-    try {
-      const e = JSON.parse(line)
-      if (e.type !== 'assistant') continue
-      const c = e.message?.content
-      if (!Array.isArray(c)) continue
-      const text = c
-        .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
-        .map((b) => b.text)
-        .join('\n')
-        .trim()
-      if (text) chunks.push(text)
-    } catch (_) {}
-  }
-  return chunks.map((t) => `● ${t}`).join('\n\n')
 }
 
 let labelCache = { value: '', ts: 0 }
@@ -367,8 +223,8 @@ const PermissionRequestSchema = z.object({
   params: z.object({
     request_id: z.string(),
     tool_name: z.string(),
-    description: z.string(),
-    input_preview: z.string(),
+    description: z.string().optional().default(''),
+    input_preview: z.string().optional().default(''),
   }),
 })
 
@@ -402,7 +258,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
   }
 
   pollAndEmit(backendId, request_id, tool_name, input_preview, cwd).catch((e) =>
-    log(`poll error ${request_id}: ${e.message ?? e}`)
+    log(`poll error ${request_id}: ${e.message ?? e}`),
   )
 })
 
@@ -412,7 +268,9 @@ async function pollAndEmit(backendId, ccRequestId, toolName, inputPreview, cwd) 
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
     let data
     try {
-      const r = await apiGet(`/v1/approvals/${backendId}`)
+      // Cap each poll to slightly less than the interval so a hung connection
+      // can't stack up waiting requests across iterations.
+      const r = await apiGet(`/v1/approvals/${backendId}`, AbortSignal.timeout(POLL_INTERVAL_MS - 100))
       if (!r.ok) continue
       data = await r.json()
     } catch (_) {
@@ -528,5 +386,6 @@ await mcp.connect(new StdioServerTransport())
 log(`connected (backend=${BACKEND ? 'configured' : 'missing'})`)
 
 sendHeartbeat()
+// .unref() so an exiting CC parent isn't kept alive by these timers.
 setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS).unref()
 setInterval(drainPrompts, PROMPT_POLL_INTERVAL_MS).unref()
