@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -46,16 +47,23 @@ fun CodeBlock(
         shape = RoundedCornerShape(6.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
     ) {
-        Text(
-            text = annotated,
-            modifier = Modifier
-                .horizontalScroll(scroll)
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            fontFamily = CodeFontFamily,
-            style = MaterialTheme.typography.bodySmall,
-            softWrap = false,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        // Inner SelectionContainer so the user can long-press on the code
+        // to copy it. Putting selection at this level (rather than relying
+        // on an outer one in the parent) keeps the gesture region tight to
+        // the visible code area — the parent can still wrap narration etc.
+        // in its own SelectionContainer without conflict.
+        SelectionContainer {
+            Text(
+                text = annotated,
+                modifier = Modifier
+                    .horizontalScroll(scroll)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                fontFamily = CodeFontFamily,
+                style = MaterialTheme.typography.bodySmall,
+                softWrap = false,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
     }
 }
 

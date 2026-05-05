@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -65,13 +66,19 @@ fun DiffView(
         shape = RoundedCornerShape(6.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
     ) {
-        Column(
-            modifier = Modifier
-                .horizontalScroll(scrollState)
-                .width(IntrinsicSize.Max),
-        ) {
-            for (line in lines) {
-                DiffRow(line, language, gutterWidth)
+        // SelectionContainer at the diff-region level: long-press anywhere
+        // inside starts a selection that can extend across rows. Line
+        // numbers and the +/- marker are part of the selection too —
+        // simpler and matches what GitHub does on mobile.
+        SelectionContainer {
+            Column(
+                modifier = Modifier
+                    .horizontalScroll(scrollState)
+                    .width(IntrinsicSize.Max),
+            ) {
+                for (line in lines) {
+                    DiffRow(line, language, gutterWidth)
+                }
             }
         }
     }

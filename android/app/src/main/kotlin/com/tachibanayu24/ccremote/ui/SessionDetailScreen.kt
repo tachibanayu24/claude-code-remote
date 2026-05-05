@@ -242,22 +242,28 @@ private fun TopBar(
 @Composable
 private fun TurnBlock(turn: Turn) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (!turn.user_prompt.isNullOrBlank()) {
+        // Prompt + narration share a SelectionContainer so a single long-
+        // press-and-drag can span the user prompt and the assistant reply.
+        // tool_calls bring their own SelectionContainers (CodeBlock /
+        // DiffView) so code/diff is selectable independently.
+        if (!turn.user_prompt.isNullOrBlank() || !turn.assistant_text.isNullOrBlank()) {
             SelectionContainer {
-                Text(
-                    text = "▷ ${turn.user_prompt}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontFamily = FontFamily.Monospace,
-                )
-            }
-        }
-        if (!turn.assistant_text.isNullOrBlank()) {
-            SelectionContainer {
-                ChatMarkdown(
-                    text = turn.assistant_text,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!turn.user_prompt.isNullOrBlank()) {
+                        Text(
+                            text = "▷ ${turn.user_prompt}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                    if (!turn.assistant_text.isNullOrBlank()) {
+                        ChatMarkdown(
+                            text = turn.assistant_text,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
             }
         }
         // Inline tool_calls: lightweight kinds compact to one line, Edit/
@@ -293,19 +299,19 @@ private fun InFlightBlock(prompt: String, assistantText: String?) {
     )
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SelectionContainer {
-            Text(
-                text = "▷ $prompt",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary,
-                fontFamily = FontFamily.Monospace,
-            )
-        }
-        if (!assistantText.isNullOrBlank()) {
-            SelectionContainer {
-                ChatMarkdown(
-                    text = assistantText,
-                    color = MaterialTheme.colorScheme.onSurface,
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "▷ $prompt",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontFamily = FontFamily.Monospace,
                 )
+                if (!assistantText.isNullOrBlank()) {
+                    ChatMarkdown(
+                        text = assistantText,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
