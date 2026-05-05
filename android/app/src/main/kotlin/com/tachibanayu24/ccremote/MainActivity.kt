@@ -10,6 +10,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -17,10 +18,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.tachibanayu24.ccremote.ui.HomeScreen
 import com.tachibanayu24.ccremote.ui.MainViewModel
+import com.tachibanayu24.ccremote.ui.Screen
 import com.tachibanayu24.ccremote.ui.SessionDetailScreen
 import com.tachibanayu24.ccremote.ui.SettingsScreen
 import com.tachibanayu24.ccremote.ui.SetupScreen
@@ -30,14 +30,12 @@ class MainActivity : ComponentActivity() {
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* outcome ignored */ }
 
-    private lateinit var vm: MainViewModel
+    private val vm: MainViewModel by viewModels { MainViewModel.Factory(application) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         ensureNotificationPermission()
-
-        vm = ViewModelProvider(this, MainViewModel.Factory(application))[MainViewModel::class.java]
         handleIntent(intent)
 
         setContent {
@@ -46,60 +44,54 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    val vmCompose: MainViewModel = viewModel(factory = MainViewModel.Factory(application))
-                    val config by vmCompose.config.collectAsState()
-                    val token by vmCompose.fcmToken.collectAsState()
-                    val saveError by vmCompose.saveError.collectAsState()
-                    val isWorking by vmCompose.isWorking.collectAsState()
-                    val sessions by vmCompose.sessions.collectAsState()
-                    val isRefreshing by vmCompose.isRefreshing.collectAsState()
-                    val showSettings by vmCompose.showSettings.collectAsState()
-                    val selectedCwd by vmCompose.selectedCwd.collectAsState()
-                    val selectedDetail by vmCompose.selectedDetail.collectAsState()
-                    val isSendingPrompt by vmCompose.isSendingPrompt.collectAsState()
+                    val config by vm.config.collectAsState()
+                    val state by vm.uiState.collectAsState()
 
                     // Treat detail and settings as pages: a back gesture
                     // returns to home instead of finishing the activity.
-                    BackHandler(enabled = selectedCwd != null) {
-                        vmCompose.closeSession()
-                    }
-                    BackHandler(enabled = showSettings) {
-                        vmCompose.closeSettings()
+                    BackHandler(enabled = state.screen != Screen.Home) {
+                        when (state.screen) {
+                            is Screen.Detail -> vm.closeSession()
+                            Screen.Settings -> vm.closeSettings()
+                            Screen.Home -> Unit
+                        }
                     }
 
                     val current = config
                     if (current == null) {
                         SetupScreen(
-                            isWorking = isWorking,
-                            error = saveError,
-                            onSave = vmCompose::saveConfig,
+                            isWorking = state.isSaving,
+                            error = state.saveError,
+                            onSave = vm::saveConfig,
                         )
-                    } else if (showSettings) {
-                        SettingsScreen(
+                        return@Surface
+                    }
+                    when (val screen = state.screen) {
+                        Screen.Home -> HomeScreen(
+                            sessions = state.sessions,
+                            isRefreshing = state.isRefreshing,
+                            onRefresh = vm::refreshSessions,
+                            onOpenSettings = vm::openSettings,
+                            onSelectSession = vm::openSession,
+                        )
+                        is Screen.Detail -> {
+                            val fallback = state.sessions.firstOrNull { it.cwd == screen.cwd }?.project_name
+                                ?: screen.cwd.substringAfterLast('/')
+                            SessionDetailScreen(
+                                detail = state.selectedDetail,
+                                fallbackProjectName = fallback,
+                                isSendingPrompt = state.isSendingPrompt,
+                                onBack = vm::closeSession,
+                                onSendPrompt = { text -> vm.sendPrompt(screen.cwd, text) },
+                                onDecideApproval = vm::decideApproval,
+                            )
+                        }
+                        Screen.Settings -> SettingsScreen(
                             config = current,
-                            fcmToken = token,
-                            onBack = vmCompose::closeSettings,
-                            onResetConfig = vmCompose::resetConfig,
-                            onTestNotification = vmCompose::sendTestNotification,
-                        )
-                    } else if (selectedCwd != null) {
-                        val fallback = sessions.firstOrNull { it.cwd == selectedCwd }?.project_name
-                            ?: selectedCwd!!.substringAfterLast('/')
-                        SessionDetailScreen(
-                            detail = selectedDetail,
-                            fallbackProjectName = fallback,
-                            isSendingPrompt = isSendingPrompt,
-                            onBack = vmCompose::closeSession,
-                            onSendPrompt = { text -> vmCompose.sendPrompt(selectedCwd!!, text) },
-                            onDecideApproval = vmCompose::decideApproval,
-                        )
-                    } else {
-                        HomeScreen(
-                            sessions = sessions,
-                            isRefreshing = isRefreshing,
-                            onRefresh = vmCompose::refreshSessions,
-                            onOpenSettings = vmCompose::openSettings,
-                            onSelectSession = vmCompose::openSession,
+                            fcmToken = state.fcmToken,
+                            onBack = vm::closeSettings,
+                            onResetConfig = vm::resetConfig,
+                            onTestNotification = vm::sendTestNotification,
                         )
                     }
                 }
