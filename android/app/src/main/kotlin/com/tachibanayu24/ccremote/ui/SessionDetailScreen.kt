@@ -265,6 +265,13 @@ private fun TurnBlock(turn: Turn) {
                 )
             }
         }
+        // Inline tool_calls: lightweight kinds compact to one line, Edit/
+        // MultiEdit/Write open into a 6-line preview + tap-to-expand diff.
+        // Key includes turn.id so each turn's expand state is independent
+        // and survives saved-state restoration.
+        turn.tool_calls.forEachIndexed { idx, call ->
+            ToolCallBlock(call = call, key = "${turn.id}#${idx}")
+        }
         val footer = footerLine(turn)
         if (footer.isNotBlank()) {
             Text(
