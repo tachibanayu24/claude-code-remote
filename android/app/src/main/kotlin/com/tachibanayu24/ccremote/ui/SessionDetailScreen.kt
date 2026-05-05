@@ -147,7 +147,7 @@ fun SessionDetailScreen(
             ClawdLogo(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .alpha(0.18f),
+                    .alpha(0.26f),
                 pixelSize = 10.dp,
                 interactive = false,
             )
@@ -160,7 +160,13 @@ fun SessionDetailScreen(
                 }
                 turns.isEmpty() && !hasInFlight && queuedPrompts.isEmpty() && pendingApprovals.isEmpty() -> EmptyState()
                 else -> LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    // Chat content is slightly translucent so the animated
+                    // Clawd backdrop bleeds through where text or whitespace
+                    // permits. Cards (PendingApprovalBlock) inherit the same
+                    // alpha so they don't feel like opaque islands.
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .alpha(0.92f),
                     state = listState,
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(20.dp),
