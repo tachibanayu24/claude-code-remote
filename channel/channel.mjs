@@ -235,11 +235,20 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     return
   }
 
-  const cwd = process.cwd()
+  const sess = readPpidSession()
+  const sessionId = sess?.sessionId
+  const cwd = sess?.cwd ?? process.cwd()
+  if (!sessionId) {
+    // Without sessionId we can't route the approval to a specific CC instance
+    // in the per-session backend. Older CC builds (no ppid file) hit this.
+    log(`permission_request ${request_id} dropped (no sessionId — older CC?)`)
+    return
+  }
+
   let backendId
   try {
     const res = await apiPost('/v1/approvals', {
-      session_id: 'channel',
+      session_id: sessionId,
       cwd,
       project_name: PROJECT,
       session_label: getSessionLabel(),
@@ -322,8 +331,13 @@ async function pollAndEmit(backendId, ccRequestId, toolName, inputPreview, cwd) 
  */
 async function sendHeartbeat() {
   if (!BACKEND || !SECRET) return
+  const snapshot = inspectSession()
+  // Backend's sessions table is keyed by session_id now; without one there's
+  // nothing to upsert. Skip silently — channel.mjs spawned by older CC that
+  // doesn't write the ppid file would otherwise spam 400s.
+  if (!snapshot.session_id) return
   try {
-    await apiPost('/v1/sessions/heartbeat', inspectSession())
+    await apiPost('/v1/sessions/heartbeat', snapshot)
   } catch (e) {
     log(`heartbeat failed: ${e.message ?? e}`)
   }
@@ -345,8 +359,8 @@ async function sendHeartbeat() {
 async function drainPrompts() {
   if (!BACKEND || !SECRET) return
   const sess = readPpidSession()
-  const cwd = sess?.cwd ?? process.cwd()
-  const path = `/v1/sessions/${encodeURIComponent(cwd)}/prompts/queued`
+  if (!sess?.sessionId) return  // queue is keyed by session_id
+  const path = `/v1/sessions/${encodeURIComponent(sess.sessionId)}/prompts/queued`
   let prompts = []
   try {
     const r = await apiGet(path)

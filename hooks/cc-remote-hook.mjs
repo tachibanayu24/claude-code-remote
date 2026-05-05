@@ -97,7 +97,12 @@ switch (mode) {
     break
   }
   case 'posttool':
-    await post('/v1/hook/posttool', { cwd: input.cwd ?? '' })
+    // session_id is required so dismissPendingApprovals scopes to this CC,
+    // not every concurrent instance in the same cwd.
+    await post('/v1/hook/posttool', {
+      session_id: input.session_id ?? '',
+      cwd: input.cwd ?? '',
+    })
     break
   default:
     log(`unknown mode '${mode}' (expected: stop | posttool)`)
