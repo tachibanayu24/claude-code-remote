@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,6 +27,7 @@ import com.tachibanayu24.ccremote.ui.ApprovalDialog
 import com.tachibanayu24.ccremote.ui.CompletionDialog
 import com.tachibanayu24.ccremote.ui.HomeScreen
 import com.tachibanayu24.ccremote.ui.MainViewModel
+import com.tachibanayu24.ccremote.ui.SessionDetailScreen
 import com.tachibanayu24.ccremote.ui.SettingsScreen
 import com.tachibanayu24.ccremote.ui.SetupScreen
 import com.tachibanayu24.ccremote.ui.theme.CcRemoteTheme
@@ -60,6 +62,17 @@ class MainActivity : ComponentActivity() {
                     val sessions by vmCompose.sessions.collectAsState()
                     val isRefreshing by vmCompose.isRefreshing.collectAsState()
                     val showSettings by vmCompose.showSettings.collectAsState()
+                    val selectedCwd by vmCompose.selectedCwd.collectAsState()
+                    val selectedDetail by vmCompose.selectedDetail.collectAsState()
+
+                    // Treat detail and settings as pages: a back gesture
+                    // returns to home instead of finishing the activity.
+                    BackHandler(enabled = selectedCwd != null) {
+                        vmCompose.closeSession()
+                    }
+                    BackHandler(enabled = showSettings) {
+                        vmCompose.closeSettings()
+                    }
 
                     val current = config
                     if (current == null) {
@@ -76,12 +89,21 @@ class MainActivity : ComponentActivity() {
                             onResetConfig = vmCompose::resetConfig,
                             onTestNotification = vmCompose::sendTestNotification,
                         )
+                    } else if (selectedCwd != null) {
+                        val fallback = sessions.firstOrNull { it.cwd == selectedCwd }?.project_name
+                            ?: selectedCwd!!.substringAfterLast('/')
+                        SessionDetailScreen(
+                            detail = selectedDetail,
+                            fallbackProjectName = fallback,
+                            onBack = vmCompose::closeSession,
+                        )
                     } else {
                         HomeScreen(
                             sessions = sessions,
                             isRefreshing = isRefreshing,
                             onRefresh = vmCompose::refreshSessions,
                             onOpenSettings = vmCompose::openSettings,
+                            onSelectSession = vmCompose::openSession,
                         )
                     }
 

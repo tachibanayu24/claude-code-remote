@@ -106,11 +106,12 @@ function aiTitleFromJsonl(jsonl) {
 }
 
 /**
- * Timestamp (ms) of the most recent external user prompt — a `user` entry
- * whose content is plain text, not a `tool_result` injection. Returns null
- * if not found.
+ * Most recent external user prompt — a `user` entry whose content is plain
+ * text, not a `tool_result` injection. Returns `{ text, ms, lineIndex }` or
+ * null if not found. lineIndex is exposed so callers can walk *forward* from
+ * that point (e.g. count tool_use entries belonging to the resulting turn).
  */
-function lastUserPromptMsFromJsonl(jsonl) {
+function lastUserPromptFromJsonl(jsonl) {
   if (!jsonl) return null
   const lines = jsonl.split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -120,23 +121,85 @@ function lastUserPromptMsFromJsonl(jsonl) {
       const e = JSON.parse(line)
       if (e.type !== 'user') continue
       const c = e.message?.content
-      const isToolResult = Array.isArray(c) && c[0]?.type === 'tool_result'
-      if (isToolResult) continue
-      if (e.timestamp) return Date.parse(e.timestamp)
+      if (Array.isArray(c) && c[0]?.type === 'tool_result') continue
+      const text = typeof c === 'string'
+        ? c
+        : Array.isArray(c)
+          ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('\n')
+          : ''
+      const ms = e.timestamp ? Date.parse(e.timestamp) : null
+      return { text: text.trim(), ms, lineIndex: i }
     } catch (_) {}
   }
   return null
 }
 
+function lastUserPromptMsFromJsonl(jsonl) {
+  return lastUserPromptFromJsonl(jsonl)?.ms ?? null
+}
+
 /**
- * Latest assistant text — Claude's final reply for this turn. Skips tool-only
- * entries (an assistant turn often contains multiple chunks; the last one
- * with actual text is what the user sees as "Claude's response").
+ * True if any assistant entry after the given line index carries
+ * `stop_reason: "end_turn"`, signalling CC has written the final chunk of
+ * the turn. Used to know when it's safe to snapshot the transcript.
  */
-function lastAssistantTextFromJsonl(jsonl) {
+function hasEndTurnAfter(jsonl, fromLineIndex) {
+  if (!jsonl) return false
+  const lines = jsonl.split('\n')
+  for (let i = fromLineIndex + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.includes('"stop_reason":"end_turn"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type === 'assistant' && e.message?.stop_reason === 'end_turn') return true
+    } catch (_) {}
+  }
+  return false
+}
+
+/**
+ * Tally `tool_use` blocks emitted by the assistant after the given jsonl line
+ * index. Returns an array of `{name, count}` sorted by count desc — used as
+ * the turn's tool summary in the detail view.
+ */
+function toolUsageAfterFromJsonl(jsonl, fromLineIndex) {
+  if (!jsonl) return []
+  const counts = new Map()
+  const lines = jsonl.split('\n')
+  for (let i = fromLineIndex + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.includes('"type":"tool_use"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type !== 'assistant') continue
+      const c = e.message?.content
+      if (!Array.isArray(c)) continue
+      for (const b of c) {
+        if (b?.type === 'tool_use' && typeof b.name === 'string') {
+          counts.set(b.name, (counts.get(b.name) ?? 0) + 1)
+        }
+      }
+    } catch (_) {}
+  }
+  return Array.from(counts.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count)
+}
+
+/**
+ * Concatenate every assistant text block emitted *after* the given jsonl
+ * line index, in the order CC wrote them. Tool-only entries are skipped;
+ * pure-text entries contribute their joined text. The result mirrors what
+ * CC shows in its terminal — "all of Claude's narration for this turn".
+ *
+ * `fromLineIndex` is typically the line index of the last user prompt. Pass
+ * `-1` to scan the entire jsonl (legacy behaviour).
+ */
+function assistantTextsAfterFromJsonl(jsonl, fromLineIndex = -1) {
   if (!jsonl) return ''
   const lines = jsonl.split('\n')
-  for (let i = lines.length - 1; i >= 0; i--) {
+  const chunks = []
+  for (let i = Math.max(0, fromLineIndex + 1); i < lines.length; i++) {
     const line = lines[i]
     if (!line.includes('"type":"assistant"')) continue
     try {
@@ -149,10 +212,16 @@ function lastAssistantTextFromJsonl(jsonl) {
         .map((b) => b.text)
         .join('\n')
         .trim()
-      if (text) return text
+      if (text) chunks.push(text)
     } catch (_) {}
   }
-  return ''
+  // Prefix each chunk with `● ` and join with blank lines, mirroring how
+  // CC renders interleaved text blocks in the terminal. We use U+25CF
+  // (BLACK CIRCLE) instead of CC's U+23FA (BLACK CIRCLE FOR RECORD)
+  // because the latter has emoji presentation on Android (Noto Color
+  // Emoji renders it as a record button), while U+25CF stays as a plain
+  // text glyph everywhere.
+  return chunks.map((t) => `● ${t}`).join('\n\n')
 }
 
 // ---------- Main ----------
@@ -182,15 +251,36 @@ async function post(path, payload) {
 
 switch (mode) {
   case 'stop': {
-    const jsonl = readSessionJsonl(input.cwd, input.session_id)
-    const cwd = canonicalCwdFromJsonl(jsonl, input.cwd ?? '')
-    const startMs = lastUserPromptMsFromJsonl(jsonl)
+    // CC fires Stop the moment its agent loop exits, but the *last* assistant
+    // message — the one with `stop_reason: end_turn` — may still be in
+    // CC's write buffer. Reading immediately gives a transcript that's
+    // missing the final narration. Poll the jsonl until either an
+    // `end_turn` entry shows up after our user prompt or we've waited the
+    // budget, then snapshot. This keeps Stop hooks fast in the common case
+    // (jsonl already flushed) and at most 1.5s slow in the worst case.
+    const cwdInput = input.cwd ?? ''
+    const sid = input.session_id
+    const start = Date.now()
+    const BUDGET_MS = 1500
+    const POLL_MS = 100
+    let jsonl = readSessionJsonl(cwdInput, sid)
+    while (Date.now() - start < BUDGET_MS) {
+      const lastPrompt = lastUserPromptFromJsonl(jsonl)
+      if (lastPrompt && hasEndTurnAfter(jsonl, lastPrompt.lineIndex)) break
+      await new Promise((r) => setTimeout(r, POLL_MS))
+      jsonl = readSessionJsonl(cwdInput, sid)
+    }
+    const cwd = canonicalCwdFromJsonl(jsonl, cwdInput)
+    const lastPrompt = lastUserPromptFromJsonl(jsonl)
+    const fullMessage = assistantTextsAfterFromJsonl(jsonl, lastPrompt?.lineIndex ?? -1)
     await post('/v1/hook/stop', {
-      session_id: input.session_id ?? '',
+      session_id: sid ?? '',
       cwd,
       ai_title: aiTitleFromJsonl(jsonl),
-      elapsed_ms: startMs !== null ? Date.now() - startMs : null,
-      full_message: lastAssistantTextFromJsonl(jsonl),
+      elapsed_ms: lastPrompt?.ms != null ? Date.now() - lastPrompt.ms : null,
+      full_message: fullMessage,
+      user_prompt: lastPrompt?.text ?? '',
+      tool_summary: lastPrompt ? toolUsageAfterFromJsonl(jsonl, lastPrompt.lineIndex) : [],
     })
     break
   }

@@ -37,6 +37,7 @@ data class Session(
     val session_id: String? = null,
     val project_name: String,
     val ai_title: String? = null,
+    val current_prompt: String? = null,
     val state: String,  // working | awaiting_approval | idle | closed
     val pending_count: Int = 0,
     val heartbeat_age_sec: Long = 0L,
@@ -45,3 +46,33 @@ data class Session(
 
 @Serializable
 data class SessionsResponse(val sessions: List<Session>)
+
+@Serializable
+data class ToolUsage(val name: String, val count: Int)
+
+@Serializable
+data class Turn(
+    val id: String,
+    val user_prompt: String? = null,
+    val assistant_text: String? = null,
+    val tool_summary: List<ToolUsage> = emptyList(),
+    val elapsed_ms: Long? = null,
+    val ended_at: Long,
+)
+
+@Serializable
+data class SessionDetailHeader(
+    val cwd: String,
+    val session_id: String? = null,
+    val project_name: String,
+    val ai_title: String? = null,
+    val current_prompt: String? = null,
+    val last_heartbeat: Long,
+    val jsonl_mtime: Long? = null,
+)
+
+@Serializable
+data class SessionDetailResponse(
+    val session: SessionDetailHeader,
+    val turns: List<Turn>,
+)

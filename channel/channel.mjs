@@ -107,6 +107,53 @@ function aiTitleFromJsonl(jsonl) {
   return ''
 }
 
+/**
+ * Detect an in-flight turn: walk the jsonl from the bottom and find the most
+ * recent external user prompt. If no `assistant` entry with text content
+ * appears AFTER it, the turn is still in progress and we return that prompt's
+ * text. Otherwise (Stop has fired) we return null so backend clears the
+ * in-flight marker.
+ */
+function inFlightUserPromptFromJsonl(jsonl) {
+  if (!jsonl) return null
+  const lines = jsonl.split('\n')
+  // Find latest user prompt index (skipping tool_result injections).
+  let promptIdx = -1
+  let promptText = ''
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]
+    if (!line.includes('"type":"user"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type !== 'user') continue
+      const c = e.message?.content
+      if (Array.isArray(c) && c[0]?.type === 'tool_result') continue
+      promptIdx = i
+      promptText = typeof c === 'string'
+        ? c
+        : Array.isArray(c)
+          ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('\n')
+          : ''
+      break
+    } catch (_) {}
+  }
+  if (promptIdx === -1) return null
+  // Look for an assistant text entry after it. If found → turn complete.
+  for (let i = promptIdx + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.includes('"type":"assistant"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type !== 'assistant') continue
+      const c = e.message?.content
+      if (!Array.isArray(c)) continue
+      const hasText = c.some((b) => b?.type === 'text' && typeof b.text === 'string' && b.text.trim())
+      if (hasText) return null
+    } catch (_) {}
+  }
+  return promptText.trim() || null
+}
+
 let labelCache = { value: '', ts: 0 }
 
 function getSessionLabel() {
@@ -133,12 +180,17 @@ function inspectSession() {
   const sessionId = sess?.sessionId ?? null
   let jsonl_mtime = null
   let ai_title = ''
+  let current_prompt = null
   if (sessionId) {
     const path = jsonlPath(cwd, sessionId)
     try { jsonl_mtime = statSync(path).mtimeMs } catch (_) {}
-    try { ai_title = aiTitleFromJsonl(readFileSync(path, 'utf8')) } catch (_) {}
+    try {
+      const jsonl = readFileSync(path, 'utf8')
+      ai_title = aiTitleFromJsonl(jsonl)
+      current_prompt = inFlightUserPromptFromJsonl(jsonl)
+    } catch (_) {}
   }
-  return { cwd, session_id: sessionId, ai_title, jsonl_mtime }
+  return { cwd, session_id: sessionId, ai_title, jsonl_mtime, current_prompt }
 }
 
 // ---------- Allowlist file management ----------

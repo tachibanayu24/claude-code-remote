@@ -1,6 +1,7 @@
 package com.tachibanayu24.ccremote.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -40,7 +42,12 @@ fun HomeScreen(
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
     onOpenSettings: () -> Unit,
+    onSelectSession: (String) -> Unit,
 ) {
+    // Refresh whenever the home screen is presented (e.g. after returning
+    // from detail/settings). The 30s poll covers passive updates; this
+    // covers the "I just opened the app" case.
+    LaunchedEffect(Unit) { onRefresh() }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -66,11 +73,11 @@ fun HomeScreen(
             ) {
                 if (active.isNotEmpty()) {
                     item { SectionLabel("active") }
-                    items(active, key = { it.cwd }) { SessionRow(it) }
+                    items(active, key = { it.cwd }) { SessionRow(it, onClick = { onSelectSession(it.cwd) }) }
                 }
                 if (closed.isNotEmpty()) {
                     item { SectionLabel("closed", topPadding = 16.dp) }
-                    items(closed, key = { it.cwd }) { SessionRow(it) }
+                    items(closed, key = { it.cwd }) { SessionRow(it, onClick = { onSelectSession(it.cwd) }) }
                 }
             }
         }
@@ -131,9 +138,11 @@ private fun SectionLabel(label: String, topPadding: androidx.compose.ui.unit.Dp 
 }
 
 @Composable
-private fun SessionRow(session: Session) {
+private fun SessionRow(session: Session, onClick: () -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = RoundedCornerShape(10.dp),
     ) {

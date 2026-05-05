@@ -30,12 +30,19 @@ export interface ApprovalRespondRequest {
   add_to_allowlist?: boolean
 }
 
+export interface ToolUsage {
+  name: string
+  count: number
+}
+
 export interface HookStopRequest {
   session_id: string
   cwd: string
   ai_title?: string
   elapsed_ms: number | null
   full_message?: string
+  user_prompt?: string
+  tool_summary?: ToolUsage[]
   // Dev-only: skip the FCM push and D1 insert; return what would have been sent.
   // Used by smoke tests so the phone doesn't get buzzed.
   dry_run?: boolean
@@ -50,6 +57,7 @@ export interface SessionHeartbeatRequest {
   session_id?: string
   ai_title?: string
   jsonl_mtime?: number  // ms epoch
+  current_prompt?: string | null  // null clears, undefined leaves untouched
 }
 
 export interface SessionRow {
@@ -59,6 +67,16 @@ export interface SessionRow {
   ai_title: string | null
   jsonl_mtime: number | null
   last_heartbeat: number
+  current_prompt: string | null
+}
+
+export interface TurnRow {
+  id: string
+  user_prompt: string | null
+  assistant_text: string | null
+  tool_summary: string | null  // JSON-encoded ToolUsage[]
+  elapsed_ms: number | null
+  ended_at: number
 }
 
 export interface ApprovalRow {

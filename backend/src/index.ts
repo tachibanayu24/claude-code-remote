@@ -11,6 +11,7 @@ import type {
   HookStopRequest,
   SessionHeartbeatRequest,
   SessionRow,
+  TurnRow,
 } from './types'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -179,15 +180,44 @@ app.post('/v1/hook/stop', async (c) => {
   const elapsedMs = body.elapsed_ms ?? null
   const fullMessage = body.full_message ?? ''
   const aiTitle = body.ai_title ?? ''
+  const userPrompt = body.user_prompt ?? ''
+  const toolSummary = body.tool_summary && body.tool_summary.length > 0
+    ? JSON.stringify(body.tool_summary)
+    : null
   const dryRun = body.dry_run === true
 
   const dismissed = dryRun ? 0 : await dismissPendingApprovals(c.env.DB, c.env, cwd)
+
+  // Persist the turn snapshot regardless of FCM threshold — the detail screen
+  // wants every turn, not just the long ones.
+  const turnId = crypto.randomUUID()
+  if (!dryRun && cwd) {
+    await c.env.DB.prepare(
+      `INSERT INTO turns (id, cwd, session_id, user_prompt, assistant_text, tool_summary, elapsed_ms, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(
+        turnId,
+        cwd,
+        body.session_id ?? '',
+        userPrompt || null,
+        fullMessage || null,
+        toolSummary,
+        elapsedMs,
+        nowSec()
+      )
+      .run()
+    // The Stop event ends an in-flight turn — clear the live prompt marker so
+    // the detail screen stops showing it as "current".
+    await c.env.DB.prepare('UPDATE sessions SET current_prompt = NULL WHERE cwd = ?')
+      .bind(cwd).run()
+  }
 
   // Threshold gate: skip the FCM push for short turns. Backend-side so the PC
   // hook doesn't need its own env knob.
   const threshold = Number.parseInt(c.env.STOP_THRESHOLD_MS ?? '180000', 10)
   if (elapsedMs !== null && elapsedMs < threshold) {
-    return c.json({ ok: true, dismissed, notified: 0, skipped: 'below_threshold', dry_run: dryRun })
+    return c.json({ ok: true, dismissed, notified: 0, skipped: 'below_threshold', dry_run: dryRun, turn_id: dryRun ? null : turnId })
   }
 
   const titleHead = aiTitle || project
@@ -216,7 +246,7 @@ app.post('/v1/hook/stop', async (c) => {
     elapsed_ms: elapsedMs != null ? String(elapsedMs) : '',
     full_message: fullMessage,
   })
-  return c.json({ ok: true, id, dismissed, notified })
+  return c.json({ ok: true, id, dismissed, notified, turn_id: turnId })
 })
 
 app.post('/v1/hook/posttool', async (c) => {
@@ -236,15 +266,16 @@ app.post('/v1/sessions/heartbeat', async (c) => {
   const project = basename(body.cwd) || 'unknown'
   const now = nowSec()
   await c.env.DB.prepare(
-    `INSERT INTO sessions (cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO sessions (cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat, updated_at, current_prompt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(cwd) DO UPDATE SET
        session_id = excluded.session_id,
        project_name = excluded.project_name,
        ai_title = COALESCE(excluded.ai_title, sessions.ai_title),
        jsonl_mtime = excluded.jsonl_mtime,
        last_heartbeat = excluded.last_heartbeat,
-       updated_at = excluded.updated_at`
+       updated_at = excluded.updated_at,
+       current_prompt = excluded.current_prompt`
   )
     .bind(
       body.cwd,
@@ -253,7 +284,8 @@ app.post('/v1/sessions/heartbeat', async (c) => {
       body.ai_title ?? null,
       body.jsonl_mtime ?? null,
       now,
-      now
+      now,
+      body.current_prompt ?? null
     )
     .run()
   return c.json({ ok: true })
@@ -271,7 +303,7 @@ app.get('/v1/sessions', async (c) => {
     .run()
 
   const sessionsRes = await c.env.DB.prepare(
-    `SELECT cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat
+    `SELECT cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat, current_prompt
      FROM sessions ORDER BY last_heartbeat DESC`
   ).all<SessionRow>()
   const pendingRes = await c.env.DB.prepare(
@@ -296,6 +328,7 @@ app.get('/v1/sessions', async (c) => {
       session_id: r.session_id,
       project_name: r.project_name,
       ai_title: r.ai_title,
+      current_prompt: r.current_prompt,
       state,
       pending_count: pendingCount,
       heartbeat_age_sec: heartbeatAgeSec,
@@ -303,6 +336,59 @@ app.get('/v1/sessions', async (c) => {
     }
   })
   return c.json({ sessions })
+})
+
+const TURNS_DEFAULT_LIMIT = 5
+const TURNS_RETENTION_SEC = 30 * 24 * 3600
+
+app.get('/v1/sessions/:cwd/turns', async (c) => {
+  const cwd = decodeURIComponent(c.req.param('cwd'))
+  if (!cwd) return c.json({ error: 'cwd required' }, 400)
+  const limitParam = Number.parseInt(c.req.query('limit') ?? '', 10)
+  const limit = Number.isFinite(limitParam) && limitParam > 0 && limitParam <= 50
+    ? limitParam
+    : TURNS_DEFAULT_LIMIT
+
+  // Cleanup-on-read: drop turns older than the retention window. Cheap; the
+  // index on (cwd, ended_at) makes this a range scan.
+  await c.env.DB.prepare('DELETE FROM turns WHERE ended_at < ?')
+    .bind(nowSec() - TURNS_RETENTION_SEC)
+    .run()
+
+  const session = await c.env.DB.prepare(
+    `SELECT cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat, current_prompt
+     FROM sessions WHERE cwd = ?`
+  ).bind(cwd).first<SessionRow>()
+  if (!session) return c.json({ error: 'not found' }, 404)
+
+  const turnsRes = await c.env.DB.prepare(
+    `SELECT id, user_prompt, assistant_text, tool_summary, elapsed_ms, ended_at
+     FROM turns WHERE cwd = ? ORDER BY ended_at DESC LIMIT ?`
+  ).bind(cwd, limit).all<TurnRow>()
+
+  const turns = (turnsRes.results ?? []).map((r) => ({
+    id: r.id,
+    user_prompt: r.user_prompt,
+    assistant_text: r.assistant_text,
+    tool_summary: r.tool_summary ? JSON.parse(r.tool_summary) : [],
+    elapsed_ms: r.elapsed_ms,
+    ended_at: r.ended_at,
+  }))
+
+  return c.json({
+    session: {
+      cwd: session.cwd,
+      session_id: session.session_id,
+      project_name: session.project_name,
+      ai_title: session.ai_title,
+      current_prompt: session.current_prompt,
+      last_heartbeat: session.last_heartbeat,
+      // jsonl_mtime is a fractional ms epoch on macOS; floor for JSON Long
+      // consumers (Android).
+      jsonl_mtime: session.jsonl_mtime != null ? Math.floor(session.jsonl_mtime) : null,
+    },
+    turns,
+  })
 })
 
 export default app

@@ -12,8 +12,10 @@ import com.tachibanayu24.ccremote.data.BackendClient
 import com.tachibanayu24.ccremote.data.Config
 import com.tachibanayu24.ccremote.data.ConfigStore
 import com.tachibanayu24.ccremote.data.Session
+import com.tachibanayu24.ccremote.data.SessionDetailResponse
 import com.tachibanayu24.ccremote.notification.ApprovalPayload
 import com.tachibanayu24.ccremote.notification.CompletionPayload
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -59,6 +61,40 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun openSettings() { _showSettings.value = true }
     fun closeSettings() { _showSettings.value = false }
+
+    private val _selectedCwd = MutableStateFlow<String?>(null)
+    val selectedCwd: StateFlow<String?> = _selectedCwd
+
+    private val _selectedDetail = MutableStateFlow<SessionDetailResponse?>(null)
+    val selectedDetail: StateFlow<SessionDetailResponse?> = _selectedDetail
+
+    private var detailPollJob: Job? = null
+
+    fun openSession(cwd: String) {
+        _selectedCwd.value = cwd
+        _selectedDetail.value = null
+        detailPollJob?.cancel()
+        detailPollJob = viewModelScope.launch {
+            while (_selectedCwd.value == cwd) {
+                val current = config.value
+                if (current != null) {
+                    val client = BackendClient(current)
+                    runCatching { client.sessionDetail(cwd) }.getOrNull()?.let {
+                        _selectedDetail.value = it
+                    }
+                    client.close()
+                }
+                delay(15_000)
+            }
+        }
+    }
+
+    fun closeSession() {
+        _selectedCwd.value = null
+        _selectedDetail.value = null
+        detailPollJob?.cancel()
+        detailPollJob = null
+    }
 
     fun refreshSessions() {
         viewModelScope.launch {
