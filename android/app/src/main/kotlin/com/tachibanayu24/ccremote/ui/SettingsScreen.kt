@@ -1,5 +1,7 @@
 package com.tachibanayu24.ccremote.ui
 
+import android.app.Activity
+import android.view.WindowManager
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,12 +27,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.tachibanayu24.ccremote.data.Config
 
@@ -42,6 +46,16 @@ fun SettingsScreen(
     onResetConfig: () -> Unit,
     onTestNotification: () -> Unit,
 ) {
+    // FLAG_SECURE blocks screenshots and recent-task previews from capturing
+    // the secret token while this screen is on top. Cleared on dispose so
+    // the rest of the app remains shareable.
+    val context = LocalContext.current
+    DisposableEffect(Unit) {
+        val window = (context as? Activity)?.window
+        window?.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -56,7 +70,7 @@ fun SettingsScreen(
             IconButton(onClick = onBack) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "back",
+                    contentDescription = "戻る",
                 )
             }
             Text(
@@ -123,7 +137,7 @@ private fun StatusCard(
                     IconButton(onClick = { revealed = !revealed }) {
                         Icon(
                             imageVector = if (revealed) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                            contentDescription = if (revealed) "hide" else "show",
+                            contentDescription = if (revealed) "値を隠す" else "値を表示",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }

@@ -9,10 +9,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -33,9 +36,10 @@ private val INLINE_RE = Regex(
 
 /**
  * Lightweight chat-text renderer. Handles `**bold**`, `` `inline code` ``,
- * and ```` ```fenced code blocks``` ````. Everything else is rendered as
- * monospace plain text. We deliberately avoid pulling in a markdown library:
- * the cost-benefit doesn't justify it for these three forms.
+ * markdown links `[text](url)` (tappable via [LinkAnnotation]), and
+ * ```` ```fenced code blocks``` ````. Everything else is rendered as
+ * monospace plain text. We deliberately avoid pulling in a markdown library
+ * — the cost-benefit doesn't justify it for these forms.
  */
 @Composable
 fun ChatMarkdown(
@@ -43,12 +47,13 @@ fun ChatMarkdown(
     color: Color,
     style: TextStyle = MaterialTheme.typography.bodyMedium,
 ) {
-    val blocks = splitByFencedCode(text)
+    // Splitting only depends on the source text, not on Compose state.
+    val blocks = remember(text) { splitByFencedCode(text) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         blocks.forEach { block ->
             when (block) {
                 is ChatBlock.Plain -> Text(
-                    text = parseInline(block.text),
+                    text = remember(block.text) { parseInline(block.text) },
                     style = style.copy(fontFamily = FontFamily.Monospace),
                     color = color,
                 )
@@ -95,17 +100,24 @@ private fun splitByFencedCode(text: String): List<ChatBlock> {
 
 private fun parseInline(text: String): AnnotatedString = buildAnnotatedString {
     var cursor = 0
+    val linkStyle = TextLinkStyles(
+        style = SpanStyle(color = LinkColor, textDecoration = TextDecoration.Underline),
+    )
     for (m in INLINE_RE.findAll(text)) {
         if (m.range.first > cursor) append(text.substring(cursor, m.range.first))
         val bold = m.groups["bold"]?.value
         val code = m.groups["code"]?.value
         val linkText = m.groups["linkText"]?.value
+        val linkUrl = m.groups["linkUrl"]?.value
         when {
             bold != null -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(bold) }
             code != null -> withStyle(SpanStyle(color = InlineCodeColor)) { append(code) }
-            linkText != null -> withStyle(
-                SpanStyle(color = LinkColor, textDecoration = TextDecoration.Underline)
-            ) { append(linkText) }
+            linkText != null && linkUrl != null -> {
+                // LinkAnnotation makes the span tappable — Compose 1.7+ feature.
+                // The system handles URI launching; no Activity context needed.
+                val link = LinkAnnotation.Url(url = linkUrl, styles = linkStyle)
+                withLink(link) { append(linkText) }
+            }
         }
         cursor = m.range.last + 1
     }
@@ -117,5 +129,13 @@ private inline fun AnnotatedString.Builder.withStyle(
     block: AnnotatedString.Builder.() -> Unit,
 ) {
     pushStyle(style)
+    try { block() } finally { pop() }
+}
+
+private inline fun AnnotatedString.Builder.withLink(
+    link: LinkAnnotation,
+    block: AnnotatedString.Builder.() -> Unit,
+) {
+    pushLink(link)
     try { block() } finally { pop() }
 }

@@ -21,6 +21,9 @@ private val DarkColors = darkColorScheme(
     surfaceVariant = SurfaceVariant,
     onSurfaceVariant = OnBgMuted,
     outline = Color(0xFF3A3A3A),
+    // Slightly darker than `outline` so HorizontalDivider reads as an
+    // accent line, not a grouping border.
+    outlineVariant = Color(0xFF2A2A2A),
     error = Deny,
     onError = Color.White,
 )

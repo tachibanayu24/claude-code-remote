@@ -1,23 +1,30 @@
 package com.tachibanayu24.ccremote.ui
 
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -34,20 +41,32 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.tachibanayu24.ccremote.data.ApprovalCommandFormatter
 import com.tachibanayu24.ccremote.data.PendingApproval
 import com.tachibanayu24.ccremote.data.QueuedPrompt
 import com.tachibanayu24.ccremote.data.SessionDetailResponse
 import com.tachibanayu24.ccremote.data.ToolUsage
 import com.tachibanayu24.ccremote.data.Turn
+import kotlinx.coroutines.delay
 
 private val InFlightAccent = Color(0xFF4ADE80)
 private val PendingAccent = Color(0xFFFACC15)
@@ -83,7 +102,7 @@ fun SessionDetailScreen(
 
         // Backend returns turns newest-first (DESC). Reverse for chat-style
         // chronological order: oldest at top, latest at bottom.
-        val turns = detail?.turns?.asReversed().orEmpty()
+        val turns = remember(detail) { detail?.turns?.asReversed().orEmpty() }
         val pendingApprovals = detail?.pending_approvals.orEmpty()
         val currentPrompt = detail?.session?.current_prompt?.takeIf { it.isNotBlank() }
         val currentAssistantText = detail?.session?.current_assistant_text?.takeIf { it.isNotBlank() }
@@ -94,30 +113,29 @@ fun SessionDetailScreen(
         // whose text already matches current_prompt (morphed into in-flight)
         // OR any committed turn's user_prompt (the turn finished — the bubble
         // would otherwise linger as a duplicate of the just-rendered turn).
-        val committedPromptTexts = turns.mapNotNull {
-            it.user_prompt?.takeIf { p -> p.isNotBlank() }
-        }.toSet()
-        val queuedPrompts = (detail?.queued_prompts.orEmpty()).filter {
-            it.text != currentPrompt && it.text !in committedPromptTexts
+        val queuedPrompts by remember(detail, currentPrompt, turns) {
+            derivedStateOf {
+                val committed = turns
+                    .mapNotNull { it.user_prompt?.takeIf { p -> p.isNotBlank() } }
+                    .toSet()
+                (detail?.queued_prompts.orEmpty()).filter {
+                    it.text != currentPrompt && it.text !in committed
+                }
+            }
         }
 
         val listState = rememberLazyListState()
-        // Scroll to *bottom* whenever the visible content meaningfully
-        // changes. animateScrollToItem(index) aligns the item top to the
-        // viewport top, which leaves the last item floating with empty
-        // space below — what we want is the last item's bottom flush with
-        // the viewport bottom. scrollOffset=Int.MAX_VALUE asks for an
-        // impossibly far-down position, which Compose clamps to the
-        // maximum valid scroll → exactly "bottom of the last item at the
-        // bottom of the viewport".
-        val lastIndex = turns.size +
+        // Re-run the auto-scroll only when the list shape *or* the live
+        // assistant text grows. Tracking just the count would miss the case
+        // where in-flight chunks stream in while no new items appear.
+        val itemCount = turns.size +
             (if (hasInFlight) 1 else 0) +
             queuedPrompts.size +
-            pendingApprovals.size - 1
+            pendingApprovals.size
         val assistantLen = currentAssistantText?.length ?: 0
-        LaunchedEffect(lastIndex, assistantLen) {
-            if (lastIndex >= 0) {
-                listState.scrollToItem(lastIndex, scrollOffset = Int.MAX_VALUE)
+        LaunchedEffect(itemCount, assistantLen) {
+            if (itemCount > 0) {
+                listState.scrollToItem(itemCount - 1, scrollOffset = Int.MAX_VALUE)
             }
         }
 
@@ -133,10 +151,7 @@ fun SessionDetailScreen(
                 else -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     state = listState,
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        horizontal = 16.dp,
-                        vertical = 12.dp,
-                    ),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
                     items(turns, key = { it.id }) { TurnBlock(it) }
@@ -154,9 +169,20 @@ fun SessionDetailScreen(
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        val sessionIsLive = detail?.session?.last_heartbeat?.let {
-            System.currentTimeMillis() / 1000 - it < SESSION_LIVE_TTL_SEC
-        } ?: true  // optimistic before first detail load arrives
+        // Re-evaluate "is the channel.mjs alive?" once a second so the input
+        // bar enables/disables in real time, not only when a new heartbeat
+        // bumps detail.
+        val sessionIsLive by produceState(initialValue = true, key1 = detail?.session?.last_heartbeat) {
+            val lastHeartbeat = detail?.session?.last_heartbeat
+            if (lastHeartbeat == null) {
+                value = true
+                return@produceState
+            }
+            while (true) {
+                value = System.currentTimeMillis() / 1000 - lastHeartbeat < SESSION_LIVE_TTL_SEC
+                delay(1_000)
+            }
+        }
         PromptInputBar(
             isSending = isSendingPrompt,
             isEnabled = sessionIsLive,
@@ -180,7 +206,7 @@ private fun TopBar(
         IconButton(onClick = onBack) {
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "back",
+                contentDescription = "戻る",
             )
         }
         Column {
@@ -205,18 +231,22 @@ private fun TopBar(
 private fun TurnBlock(turn: Turn) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (!turn.user_prompt.isNullOrBlank()) {
-            Text(
-                text = "▷ ${turn.user_prompt}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary,
-                fontFamily = FontFamily.Monospace,
-            )
+            SelectionContainer {
+                Text(
+                    text = "▷ ${turn.user_prompt}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
         }
         if (!turn.assistant_text.isNullOrBlank()) {
-            ChatMarkdown(
-                text = turn.assistant_text,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
+            SelectionContainer {
+                ChatMarkdown(
+                    text = turn.assistant_text,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
         }
         val footer = footerLine(turn)
         if (footer.isNotBlank()) {
@@ -232,23 +262,38 @@ private fun TurnBlock(turn: Turn) {
 
 @Composable
 private fun InFlightBlock(prompt: String, assistantText: String?) {
+    val transition = rememberInfiniteTransition(label = "in-flight-pulse")
+    val pulseAlpha by transition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "in-flight-alpha",
+    )
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            text = "▷ $prompt",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.primary,
-            fontFamily = FontFamily.Monospace,
-        )
-        if (!assistantText.isNullOrBlank()) {
-            ChatMarkdown(
-                text = assistantText,
-                color = MaterialTheme.colorScheme.onSurface,
+        SelectionContainer {
+            Text(
+                text = "▷ $prompt",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontFamily = FontFamily.Monospace,
             )
+        }
+        if (!assistantText.isNullOrBlank()) {
+            SelectionContainer {
+                ChatMarkdown(
+                    text = assistantText,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
                     .size(6.dp)
+                    .alpha(pulseAlpha)
                     .background(InFlightAccent, CircleShape),
             )
             Spacer(Modifier.size(6.dp))
@@ -265,12 +310,14 @@ private fun InFlightBlock(prompt: String, assistantText: String?) {
 @Composable
 private fun QueuedPromptBlock(prompt: QueuedPrompt) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            text = "▷ ${prompt.text}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.primary,
-            fontFamily = FontFamily.Monospace,
-        )
+        SelectionContainer {
+            Text(
+                text = "▷ ${prompt.text}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
@@ -293,6 +340,7 @@ private fun PendingApprovalBlock(
     approval: PendingApproval,
     onDecide: (String, String, Boolean) -> Unit,
 ) {
+    val haptic = LocalHapticFeedback.current
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -318,7 +366,9 @@ private fun PendingApprovalBlock(
             }
             val description = approval.description
                 .takeIf { it.isNotBlank() && !(it.startsWith("{") && it.endsWith("}")) }
-            val command = approvalCommand(approval)
+            val command = remember(approval.tool_name, approval.input_preview) {
+                ApprovalCommandFormatter.extract(approval.tool_name, approval.input_preview)
+            }
             if (description != null && description != command) {
                 Text(
                     text = description,
@@ -332,12 +382,14 @@ private fun PendingApprovalBlock(
                     color = MaterialTheme.colorScheme.surface,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(
-                        text = command,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(10.dp),
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = command,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(10.dp),
+                        )
+                    }
                 }
             }
             Row(
@@ -345,20 +397,44 @@ private fun PendingApprovalBlock(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Button(
-                    onClick = { onDecide(approval.id, "allow", false) },
-                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onDecide(approval.id, "allow", false)
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "${approval.tool_name} を許可"
+                        },
                 ) { Text("Allow") }
                 Button(
-                    onClick = { onDecide(approval.id, "allow", true) },
-                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onDecide(approval.id, "allow", true)
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "${approval.tool_name} を常に許可"
+                        },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.tertiary,
                         contentColor = MaterialTheme.colorScheme.onTertiary,
                     ),
                 ) { Text("Always") }
                 OutlinedButton(
-                    onClick = { onDecide(approval.id, "deny", false) },
-                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onDecide(approval.id, "deny", false)
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "${approval.tool_name} を拒否"
+                        },
                 ) { Text("Deny") }
             }
         }
@@ -371,6 +447,7 @@ private fun PromptInputBar(
     isEnabled: Boolean,
     onSend: (String) -> Unit,
 ) {
+    val haptic = LocalHapticFeedback.current
     var text by remember { mutableStateOf("") }
     Row(
         modifier = Modifier
@@ -397,6 +474,7 @@ private fun PromptInputBar(
             onClick = {
                 val toSend = text.trim()
                 if (toSend.isNotEmpty()) {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onSend(toSend)
                     text = ""
                 }
@@ -408,52 +486,11 @@ private fun PromptInputBar(
             } else {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "send",
+                    contentDescription = "送信",
                 )
             }
         }
     }
-}
-
-/**
- * Pull the actually-executed command / target out of `input_preview` so the
- * user knows what they're approving. `input_preview` is the JSON-stringified
- * tool input (truncated to 200 chars by Channels), `description` is CC's
- * friendly action label. Returns the tool's key argument when we can extract
- * it (Bash → command, Edit → file_path, Grep → pattern, etc.), falling back
- * to the raw input_preview so we never silently swallow context.
- */
-private fun approvalCommand(approval: PendingApproval): String {
-    val parsed = runCatching { org.json.JSONObject(approval.input_preview) }.getOrNull()
-    val keyArg = when (approval.tool_name) {
-        "Bash" -> parsed?.optString("command")?.takeIf { it.isNotBlank() }
-            ?: extractKey(approval.input_preview, "command")
-        "Edit", "Write", "MultiEdit" -> parsed?.optString("file_path")?.takeIf { it.isNotBlank() }
-            ?: extractKey(approval.input_preview, "file_path")
-        "Read", "Glob" -> parsed?.optString("file_path")?.takeIf { it.isNotBlank() }
-            ?: parsed?.optString("pattern")?.takeIf { it.isNotBlank() }
-            ?: extractKey(approval.input_preview, "file_path")
-            ?: extractKey(approval.input_preview, "pattern")
-        "Grep" -> parsed?.optString("pattern")?.takeIf { it.isNotBlank() }
-            ?: extractKey(approval.input_preview, "pattern")
-        else -> null
-    }
-    return keyArg ?: approval.input_preview.ifBlank { approval.tool_name }
-}
-
-/**
- * Channels truncates input_preview at 200 chars, often mid-string. Fall back
- * to a regex that handles a partially-broken JSON `"<key>":"..."` pair.
- */
-private fun extractKey(text: String, key: String): String? {
-    val m = Regex("\"$key\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)").find(text) ?: return null
-    val raw = m.groupValues[1]
-    val unescaped = raw
-        .replace("\\\"", "\"")
-        .replace("\\\\", "\\")
-        .replace("\\n", "\n")
-        .replace("\\t", "\t")
-    return unescaped.takeIf { it.isNotBlank() }
 }
 
 private fun footerLine(turn: Turn): String {

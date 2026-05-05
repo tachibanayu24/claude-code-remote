@@ -89,7 +89,9 @@ fun ClawdLogo(
     var pose by remember { mutableStateOf(ClawdPose.Default) }
     var crouching by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    var currentJob by remember { mutableStateOf<Job?>(null) }
+    // Plain ref — no recomposition needed when the job changes, and avoids
+    // the equality-check cost of mutableStateOf<Job?>.
+    val currentJob = remember { JobHolder() }
 
     val crouchOffset by animateDpAsState(
         targetValue = if (crouching) pixelSize * 2f else 0.dp,
@@ -97,8 +99,8 @@ fun ClawdLogo(
     )
 
     fun runRandomSequence() {
-        currentJob?.cancel()
-        currentJob = scope.launch {
+        currentJob.value?.cancel()
+        currentJob.value = scope.launch {
             val seq = if (Random.nextBoolean()) JUMP_WAVE else LOOK_AROUND
             try {
                 for (f in seq) {
@@ -117,7 +119,7 @@ fun ClawdLogo(
         LaunchedEffect(Unit) {
             delay(Random.nextLong(2500L, 5000L))
             while (true) {
-                if (currentJob?.isActive != true) {
+                if (currentJob.value?.isActive != true) {
                     runRandomSequence()
                 }
                 delay(Random.nextLong(4000L, 9000L))
@@ -126,7 +128,7 @@ fun ClawdLogo(
     }
 
     val tap = if (interactive) {
-        Modifier.clickable { runRandomSequence() }
+        Modifier.clickable(onClickLabel = "Clawd を動かす") { runRandomSequence() }
     } else Modifier
 
     // Each pixel is rendered as 1 unit wide x 2 units tall, matching CLI cell
@@ -158,4 +160,12 @@ fun ClawdLogo(
             }
         }
     }
+}
+
+/**
+ * Plain mutable holder — keeps the active animation Job out of Compose
+ * snapshot state, since we never need a recomposition when it changes.
+ */
+private class JobHolder {
+    var value: Job? = null
 }

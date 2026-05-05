@@ -17,6 +17,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,6 +28,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 
+private const val MIN_SECRET_LENGTH = 16
+
 @Composable
 fun SetupScreen(
     isWorking: Boolean,
@@ -35,6 +38,32 @@ fun SetupScreen(
 ) {
     var url by remember { mutableStateOf("") }
     var secret by remember { mutableStateOf("") }
+
+    val urlError by remember {
+        derivedStateOf {
+            val trimmed = url.trim()
+            when {
+                trimmed.isBlank() -> null
+                !trimmed.startsWith("http://") && !trimmed.startsWith("https://") ->
+                    "http:// または https:// で始めてください"
+                else -> null
+            }
+        }
+    }
+    val secretError by remember {
+        derivedStateOf {
+            val trimmed = secret.trim()
+            when {
+                trimmed.isBlank() -> null
+                trimmed.length < MIN_SECRET_LENGTH -> "${MIN_SECRET_LENGTH} 文字以上にしてください"
+                else -> null
+            }
+        }
+    }
+    val canSubmit = url.trim().isNotEmpty() &&
+        secret.trim().isNotEmpty() &&
+        urlError == null &&
+        secretError == null
 
     Column(
         modifier = Modifier
@@ -67,7 +96,9 @@ fun SetupScreen(
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             modifier = Modifier.fillMaxWidth(),
-            textStyle = MaterialTheme.typography.labelLarge,
+            textStyle = MaterialTheme.typography.bodyMedium,
+            isError = urlError != null,
+            supportingText = urlError?.let { { Text(it) } },
         )
 
         OutlinedTextField(
@@ -79,7 +110,9 @@ fun SetupScreen(
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             modifier = Modifier.fillMaxWidth(),
-            textStyle = MaterialTheme.typography.labelLarge,
+            textStyle = MaterialTheme.typography.bodyMedium,
+            isError = secretError != null,
+            supportingText = secretError?.let { { Text(it) } },
         )
 
         if (error != null) {
@@ -92,7 +125,7 @@ fun SetupScreen(
 
         Button(
             onClick = { onSave(url, secret) },
-            enabled = !isWorking,
+            enabled = !isWorking && canSubmit,
             modifier = Modifier.fillMaxWidth(),
         ) {
             if (isWorking) {

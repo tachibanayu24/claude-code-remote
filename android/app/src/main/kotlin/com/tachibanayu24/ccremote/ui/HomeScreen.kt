@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,29 +14,39 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.tachibanayu24.ccremote.data.Session
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     sessions: List<Session>,
@@ -53,31 +64,38 @@ fun HomeScreen(
             .fillMaxSize()
             .safeDrawingPadding(),
     ) {
-        TopBar(
+        TopBar(onOpenSettings = onOpenSettings)
+        // Filter sessions only when the source list changes — avoids running
+        // the partition every recomposition.
+        val partitioned by remember(sessions) {
+            derivedStateOf {
+                sessions.partition { it.state != "closed" }
+            }
+        }
+        val (active, closed) = partitioned
+
+        PullToRefreshBox(
             isRefreshing = isRefreshing,
             onRefresh = onRefresh,
-            onOpenSettings = onOpenSettings,
-        )
-        if (sessions.isEmpty()) {
-            EmptyState(modifier = Modifier.fillMaxSize())
-        } else {
-            val active = sessions.filter { it.state != "closed" }
-            val closed = sessions.filter { it.state == "closed" }
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    horizontal = 12.dp,
-                    vertical = 8.dp,
-                ),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (active.isNotEmpty()) {
-                    item { SectionLabel("active") }
-                    items(active, key = { it.cwd }) { SessionRow(it, onClick = { onSelectSession(it.cwd) }) }
-                }
-                if (closed.isNotEmpty()) {
-                    item { SectionLabel("closed", topPadding = 16.dp) }
-                    items(closed, key = { it.cwd }) { SessionRow(it, onClick = { onSelectSession(it.cwd) }) }
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            if (sessions.isEmpty()) {
+                EmptyState(modifier = Modifier.fillMaxSize())
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (active.isNotEmpty()) {
+                        item { SectionLabel("active") }
+                        items(active, key = { it.cwd }) { SessionRow(it, onClick = { onSelectSession(it.cwd) }) }
+                    }
+                    if (closed.isNotEmpty()) {
+                        item { SectionLabel("closed", topPadding = 16.dp) }
+                        items(closed, key = { it.cwd }) { SessionRow(it, onClick = { onSelectSession(it.cwd) }) }
+                    }
+                    item { LegendRow() }
                 }
             }
         }
@@ -85,11 +103,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun TopBar(
-    isRefreshing: Boolean,
-    onRefresh: () -> Unit,
-    onOpenSettings: () -> Unit,
-) {
+private fun TopBar(onOpenSettings: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -103,30 +117,17 @@ private fun TopBar(
             fontFamily = FontFamily.Monospace,
         )
         Spacer(Modifier.weight(1f))
-        IconButton(onClick = onRefresh, enabled = !isRefreshing) {
-            if (isRefreshing) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
-                    strokeWidth = 2.dp,
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Filled.Refresh,
-                    contentDescription = "refresh",
-                )
-            }
-        }
         IconButton(onClick = onOpenSettings) {
             Icon(
                 imageVector = Icons.Filled.Settings,
-                contentDescription = "settings",
+                contentDescription = "設定を開く",
             )
         }
     }
 }
 
 @Composable
-private fun SectionLabel(label: String, topPadding: androidx.compose.ui.unit.Dp = 0.dp) {
+private fun SectionLabel(label: String, topPadding: Dp = 0.dp) {
     Text(
         text = "— $label —",
         style = MaterialTheme.typography.labelSmall,
@@ -139,10 +140,27 @@ private fun SectionLabel(label: String, topPadding: androidx.compose.ui.unit.Dp 
 
 @Composable
 private fun SessionRow(session: Session, onClick: () -> Unit) {
+    val talkBackLabel = remember(session) {
+        val title = session.ai_title?.takeIf { it.isNotBlank() }
+        buildString {
+            append(stateLabel(session))
+            append(", project ").append(session.project_name)
+            if (title != null) {
+                append(", ").append(title)
+            }
+        }
+    }
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            // 48dp minimum tap target satisfies a11y guidelines even on
+            // small font scales.
+            .sizeIn(minHeight = 48.dp)
+            .clickable(onClickLabel = "セッションを開く", onClick = onClick)
+            .semantics {
+                role = Role.Button
+                contentDescription = talkBackLabel
+            },
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = RoundedCornerShape(10.dp),
     ) {
@@ -175,19 +193,58 @@ private fun SessionRow(session: Session, onClick: () -> Unit) {
     }
 }
 
+private val WorkingColor = Color(0xFF4ADE80)            // green
+private val AwaitingColor = Color(0xFFFACC15)            // amber
+private val IdleColor = Color(0xFF94A3B8)                // slate
+private val ClosedColor = Color(0xFF475569)              // dark slate
+
 @Composable
 private fun StateDot(state: String) {
     val color = when (state) {
-        "working" -> Color(0xFF4ADE80)            // green
-        "awaiting_approval" -> Color(0xFFFACC15)  // amber
-        "idle" -> Color(0xFF94A3B8)               // slate
-        else -> Color(0xFF475569)                 // closed: dark slate
+        "working" -> WorkingColor
+        "awaiting_approval" -> AwaitingColor
+        "idle" -> IdleColor
+        else -> ClosedColor
     }
     Box(
         modifier = Modifier
             .size(10.dp)
             .background(color = color, shape = CircleShape),
     )
+}
+
+@Composable
+private fun LegendRow() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp, bottom = 8.dp, start = 12.dp, end = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LegendItem(WorkingColor, "working")
+        LegendItem(AwaitingColor, "awaiting")
+        LegendItem(IdleColor, "idle")
+        LegendItem(ClosedColor, "closed")
+    }
+}
+
+@Composable
+private fun LegendItem(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .background(color, CircleShape),
+        )
+        Spacer(Modifier.size(4.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontFamily = FontFamily.Monospace,
+        )
+    }
 }
 
 private fun subtitleFor(session: Session): String {
@@ -232,3 +289,4 @@ private fun EmptyState(modifier: Modifier = Modifier) {
         }
     }
 }
+
