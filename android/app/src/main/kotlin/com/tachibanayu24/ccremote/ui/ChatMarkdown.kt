@@ -2,15 +2,10 @@ package com.tachibanayu24.ccremote.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
@@ -22,10 +17,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import com.tachibanayu24.ccremote.ui.code.CodeBlock
+import com.tachibanayu24.ccremote.ui.code.resolveLanguage
 
 // Tailwind cyan-300; reads well on the dark Material 3 surface.
 private val InlineCodeColor = Color(0xFF67E8F9)
-private val CodeBlockTextColor = Color(0xFFE2E8F0)
 // Tailwind sky-400 — distinguishes link-styled text from cyan inline code.
 private val LinkColor = Color(0xFF38BDF8)
 private val FENCE_RE = Regex("```([a-zA-Z0-9_+-]*)\\s*\\n([\\s\\S]*?)```")
@@ -57,18 +53,10 @@ fun ChatMarkdown(
                     style = style.copy(fontFamily = FontFamily.Monospace),
                     color = color,
                 )
-                is ChatBlock.Code -> Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        text = block.code,
-                        style = style.copy(fontFamily = FontFamily.Monospace),
-                        color = CodeBlockTextColor,
-                        modifier = Modifier.padding(12.dp),
-                    )
-                }
+                is ChatBlock.Code -> CodeBlock(
+                    code = block.code,
+                    language = resolveLanguage(block.lang),
+                )
             }
         }
     }
@@ -76,7 +64,7 @@ fun ChatMarkdown(
 
 private sealed class ChatBlock {
     data class Plain(val text: String) : ChatBlock()
-    data class Code(val code: String) : ChatBlock()
+    data class Code(val lang: String, val code: String) : ChatBlock()
 }
 
 private fun splitByFencedCode(text: String): List<ChatBlock> {
@@ -87,7 +75,7 @@ private fun splitByFencedCode(text: String): List<ChatBlock> {
             val plain = text.substring(lastEnd, m.range.first).trim('\n')
             if (plain.isNotEmpty()) blocks += ChatBlock.Plain(plain)
         }
-        blocks += ChatBlock.Code(m.groupValues[2].trimEnd('\n'))
+        blocks += ChatBlock.Code(lang = m.groupValues[1], code = m.groupValues[2].trimEnd('\n'))
         lastEnd = m.range.last + 1
     }
     if (lastEnd < text.length) {

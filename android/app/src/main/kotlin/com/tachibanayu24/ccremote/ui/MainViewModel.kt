@@ -132,9 +132,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 BackendClientHolder.current()?.sessionDetail(sessionId)?.let { detail ->
                     _uiState.update { it.copy(selectedDetail = detail) }
                 }
-                // Match the channel.mjs heartbeat cadence so the live in-flight
-                // assistant text feels responsive without busy-looping.
-                delay(3_000)
+                // GET-only polling so we can read tighter than the channel
+                // heartbeat writes (1.5s vs 1.5–5s adaptive). D1 read budget
+                // is 5M/day, so 1.5s × 12h = ~30K reads is comfortable.
+                delay(1_500)
             }
         }
     }
