@@ -2,11 +2,14 @@ package com.tachibanayu24.ccremote.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import java.io.IOException
 import java.util.UUID
 
 private val Context.dataStore by preferencesDataStore("cc_remote_config")
@@ -16,13 +19,19 @@ object ConfigStore {
     private val K_SECRET = stringPreferencesKey("shared_secret")
     private val K_DEVICE_ID = stringPreferencesKey("device_id")
 
-    fun flow(context: Context): Flow<Config?> = context.dataStore.data.map { prefs ->
-        val url = prefs[K_BACKEND].orEmpty()
-        val secret = prefs[K_SECRET].orEmpty()
-        val deviceId = prefs[K_DEVICE_ID].orEmpty()
-        if (url.isBlank() || secret.isBlank() || deviceId.isBlank()) null
-        else Config(url, secret, deviceId)
-    }
+    fun flow(context: Context): Flow<Config?> = context.dataStore.data
+        // DataStore can throw IOException on disk corruption — surface an
+        // empty preferences set instead so the UI degrades to "unconfigured"
+        // rather than crashing the consumer (Compose collectAsState would
+        // re-throw onto the main thread).
+        .catch { e -> if (e is IOException) emit(emptyPreferences()) else throw e }
+        .map { prefs ->
+            val url = prefs[K_BACKEND].orEmpty()
+            val secret = prefs[K_SECRET].orEmpty()
+            val deviceId = prefs[K_DEVICE_ID].orEmpty()
+            if (url.isBlank() || secret.isBlank() || deviceId.isBlank()) null
+            else Config(url, secret, deviceId)
+        }
 
     suspend fun current(context: Context): Config? = flow(context).first()
 

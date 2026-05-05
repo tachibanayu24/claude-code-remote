@@ -2,6 +2,7 @@ package com.tachibanayu24.ccremote.data
 
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.call.body
@@ -16,11 +17,24 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
+/**
+ * HTTP client wired to a single `Config`. Hold one instance per active
+ * config (see `BackendClientHolder`) — each instance owns an OkHttp
+ * connection pool, so re-creating per call destroys keep-alive and HTTP/2
+ * multiplexing benefits.
+ */
 class BackendClient(private val config: Config) {
     private val http = HttpClient(OkHttp) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
+        }
+        install(HttpTimeout) {
+            requestTimeoutMillis = 15_000
+            connectTimeoutMillis = 10_000
+            socketTimeoutMillis = 15_000
         }
         defaultRequest {
             header(HttpHeaders.Authorization, "Bearer ${config.sharedSecret}")
@@ -34,27 +48,29 @@ class BackendClient(private val config: Config) {
         res.status.isSuccess()
     }.getOrDefault(false)
 
-    suspend fun registerDevice(fcmToken: String, name: String?) {
-        http.post("${config.backendUrl}/v1/devices/register") {
+    suspend fun registerDevice(fcmToken: String, name: String?): Boolean = runCatching {
+        val res: HttpResponse = http.post("${config.backendUrl}/v1/devices/register") {
             setBody(DeviceRegisterRequest(config.deviceId, fcmToken, name))
         }
-    }
+        res.status.isSuccess()
+    }.getOrDefault(false)
 
     suspend fun respondApproval(
         requestId: String,
         decision: String,
         addToAllowlist: Boolean = false,
-    ) {
-        http.post("${config.backendUrl}/v1/approvals/$requestId/respond") {
+    ): Boolean = runCatching {
+        val res: HttpResponse = http.post("${config.backendUrl}/v1/approvals/$requestId/respond") {
             setBody(
                 ApprovalRespondRequest(
                     decision = decision,
                     device_id = config.deviceId,
                     add_to_allowlist = addToAllowlist,
-                )
+                ),
             )
         }
-    }
+        res.status.isSuccess()
+    }.getOrDefault(false)
 
     suspend fun listSessions(): List<Session> = runCatching {
         val res: HttpResponse = http.get("${config.backendUrl}/v1/sessions")
@@ -62,7 +78,9 @@ class BackendClient(private val config: Config) {
     }.getOrDefault(emptyList())
 
     suspend fun sessionDetail(cwd: String, limit: Int = 20): SessionDetailResponse? = runCatching {
-        val res: HttpResponse = http.get("${config.backendUrl}/v1/sessions/${encodeCwd(cwd)}/turns?limit=$limit")
+        val res: HttpResponse = http.get(
+            "${config.backendUrl}/v1/sessions/${encodeCwd(cwd)}/turns?limit=$limit",
+        )
         if (!res.status.isSuccess()) null else res.body<SessionDetailResponse>()
     }.getOrNull()
 
@@ -73,12 +91,8 @@ class BackendClient(private val config: Config) {
         res.status.isSuccess()
     }.getOrDefault(false)
 
-    private fun encodeCwd(cwd: String): String =
-        // URLEncoder uses '+' for spaces (form encoding); path parsers expect %20.
-        java.net.URLEncoder.encode(cwd, "UTF-8").replace("+", "%20")
-
-    suspend fun sendTestNotification() {
-        http.post("${config.backendUrl}/v1/hook/stop") {
+    suspend fun sendTestNotification(): Boolean = runCatching {
+        val res: HttpResponse = http.post("${config.backendUrl}/v1/hook/stop") {
             setBody(
                 HookStopRequest(
                     session_id = "android-test",
@@ -88,10 +102,15 @@ class BackendClient(private val config: Config) {
                     // backend always pushes the FCM for this manual test.
                     elapsed_ms = 24L * 60L * 60L * 1000L,
                     full_message = "test",
-                )
+                ),
             )
         }
-    }
+        res.status.isSuccess()
+    }.getOrDefault(false)
+
+    /** URLEncoder uses '+' for spaces (form encoding); path parsers expect %20. */
+    private fun encodeCwd(cwd: String): String =
+        URLEncoder.encode(cwd, StandardCharsets.UTF_8.name()).replace("+", "%20")
 
     fun close() = http.close()
 }
