@@ -99,12 +99,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // ---------- Navigation ----------
 
-    fun openSession(cwd: String) {
+    fun openSession(sessionId: String) {
         // Already on this session — leave the existing poll running so the
         // current detail data isn't briefly cleared.
-        if ((_uiState.value.screen as? Screen.Detail)?.cwd == cwd) return
-        _uiState.update { it.copy(screen = Screen.Detail(cwd), selectedDetail = null) }
-        startDetailPolling(cwd)
+        if ((_uiState.value.screen as? Screen.Detail)?.sessionId == sessionId) return
+        _uiState.update { it.copy(screen = Screen.Detail(sessionId), selectedDetail = null) }
+        startDetailPolling(sessionId)
     }
 
     fun closeSession() {
@@ -123,13 +123,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         _uiState.update { it.copy(screen = Screen.Home, saveError = null) }
     }
 
-    private fun startDetailPolling(cwd: String) {
+    private fun startDetailPolling(sessionId: String) {
         detailPollJob?.cancel()
         detailPollJob = viewModelScope.launch {
             while (true) {
                 val current = _uiState.value.screen
-                if (current !is Screen.Detail || current.cwd != cwd) break
-                BackendClientHolder.current()?.sessionDetail(cwd)?.let { detail ->
+                if (current !is Screen.Detail || current.sessionId != sessionId) break
+                BackendClientHolder.current()?.sessionDetail(sessionId)?.let { detail ->
                     _uiState.update { it.copy(selectedDetail = detail) }
                 }
                 // Match the channel.mjs heartbeat cadence so the live in-flight
@@ -157,19 +157,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     // ---------- Detail actions ----------
 
     /**
-     * Enqueue a prompt for `cwd`. The PC's channel.mjs polls and injects it
-     * as the next user turn. We optimistically refresh detail right after so
+     * Enqueue a prompt for [sessionId]. The PC's channel.mjs polls and injects
+     * it as the next user turn. We optimistically refresh detail right after so
      * the UI feels snappy even before the next 3s tick.
      */
-    fun sendPrompt(cwd: String, text: String) {
+    fun sendPrompt(sessionId: String, text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty() || _uiState.value.isSendingPrompt) return
         viewModelScope.launch {
             val client = BackendClientHolder.current() ?: return@launch
             _uiState.update { it.copy(isSendingPrompt = true) }
             try {
-                client.postPrompt(cwd, trimmed)
-                client.sessionDetail(cwd)?.let { detail ->
+                client.postPrompt(sessionId, trimmed)
+                client.sessionDetail(sessionId)?.let { detail ->
                     _uiState.update { it.copy(selectedDetail = detail) }
                 }
             } finally {
@@ -184,8 +184,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             client.respondApproval(approvalId, decision, addToAllowlist)
             // Refresh detail so the resolved approval disappears from the
             // pending list immediately.
-            val cwd = (_uiState.value.screen as? Screen.Detail)?.cwd ?: return@launch
-            client.sessionDetail(cwd)?.let { detail ->
+            val sessionId = (_uiState.value.screen as? Screen.Detail)?.sessionId ?: return@launch
+            client.sessionDetail(sessionId)?.let { detail ->
                 _uiState.update { it.copy(selectedDetail = detail) }
             }
         }

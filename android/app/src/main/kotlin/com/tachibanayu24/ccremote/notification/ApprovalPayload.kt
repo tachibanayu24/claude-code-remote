@@ -6,10 +6,11 @@ import com.tachibanayu24.ccremote.data.ApprovalCommandFormatter
  * Approval-request fields the FCM payload carries. Used to render the
  * notification body and (via the action receiver) to send the verdict back
  * to the backend. Tap-into-app no longer rehydrates this payload — the
- * detail screen for the session's cwd is opened instead.
+ * detail screen for the session is opened instead.
  */
 data class ApprovalPayload(
     val requestId: String,
+    val sessionId: String,
     val cwd: String,
     val project: String,
     val sessionLabel: String,
@@ -47,6 +48,7 @@ data class ApprovalPayload(
             val requestId = data["request_id"] ?: return null
             return ApprovalPayload(
                 requestId = requestId,
+                sessionId = data["session_id"].orEmpty(),
                 cwd = data["cwd"].orEmpty(),
                 project = data["project"].orEmpty(),
                 sessionLabel = data["session_label"].orEmpty(),

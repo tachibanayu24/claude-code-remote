@@ -36,8 +36,8 @@ data class PromptCreateRequest(val text: String)
 
 @Serializable
 data class Session(
+    val session_id: String,
     val cwd: String,
-    val session_id: String? = null,
     val project_name: String,
     val ai_title: String? = null,
     val current_prompt: String? = null,
@@ -81,8 +81,8 @@ data class QueuedPrompt(
 
 @Serializable
 data class SessionDetailHeader(
+    val session_id: String,
     val cwd: String,
-    val session_id: String? = null,
     val project_name: String,
     val ai_title: String? = null,
     val current_prompt: String? = null,

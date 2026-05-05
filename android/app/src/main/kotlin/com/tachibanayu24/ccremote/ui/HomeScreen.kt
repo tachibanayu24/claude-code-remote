@@ -89,11 +89,15 @@ fun HomeScreen(
                 ) {
                     if (active.isNotEmpty()) {
                         item { SectionLabel("active") }
-                        items(active, key = { it.cwd }) { SessionRow(it, onClick = { onSelectSession(it.cwd) }) }
+                        items(active, key = { it.session_id }) {
+                            SessionRow(it, onClick = { onSelectSession(it.session_id) })
+                        }
                     }
                     if (closed.isNotEmpty()) {
                         item { SectionLabel("closed", topPadding = 16.dp) }
-                        items(closed, key = { it.cwd }) { SessionRow(it, onClick = { onSelectSession(it.cwd) }) }
+                        items(closed, key = { it.session_id }) {
+                            SessionRow(it, onClick = { onSelectSession(it.session_id) })
+                        }
                     }
                     item { LegendRow() }
                 }
@@ -140,14 +144,11 @@ private fun SectionLabel(label: String, topPadding: Dp = 0.dp) {
 
 @Composable
 private fun SessionRow(session: Session, onClick: () -> Unit) {
-    val talkBackLabel = remember(session) {
-        val title = session.ai_title?.takeIf { it.isNotBlank() }
+    val titleLine = remember(session) { titleLineFor(session) }
+    val talkBackLabel = remember(session, titleLine) {
         buildString {
             append(stateLabel(session))
-            append(", project ").append(session.project_name)
-            if (title != null) {
-                append(", ").append(title)
-            }
+            append(", ").append(titleLine)
         }
     }
     Card(
@@ -174,7 +175,7 @@ private fun SessionRow(session: Session, onClick: () -> Unit) {
             Spacer(Modifier.size(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = session.project_name,
+                    text = titleLine,
                     style = MaterialTheme.typography.titleSmall,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurface,
@@ -191,6 +192,18 @@ private fun SessionRow(session: Session, onClick: () -> Unit) {
             }
         }
     }
+}
+
+/**
+ * Title line shown in the home list. Multiple CC sessions can live in the
+ * same project, so append a discriminator: ai_title if CC has named the
+ * session, otherwise the last 6 hex chars of session_id (the same `#abcd1f`
+ * shorthand used in logs).
+ */
+private fun titleLineFor(session: Session): String {
+    val discriminator = session.ai_title?.takeIf { it.isNotBlank() }
+        ?: "#" + session.session_id.takeLast(6)
+    return "${session.project_name} · $discriminator"
 }
 
 private val WorkingColor = Color(0xFF4ADE80)            // green

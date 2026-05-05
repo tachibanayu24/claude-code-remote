@@ -38,7 +38,7 @@ object NotificationFactory {
             context, payload, ApprovalActionReceiver.DECISION_DENY,
             addToAllowlist = false, requestCode = notificationId * 4 + 2,
         )
-        val tap = openSessionPending(context, payload.cwd, requestCode = notificationId * 4 + 3)
+        val tap = openSessionPending(context, payload.sessionId, requestCode = notificationId * 4 + 3)
 
         val notification = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
             .setSmallIcon(R.drawable.ic_clawd)
@@ -71,11 +71,11 @@ object NotificationFactory {
         val kind = data["kind"] ?: "info"
         val project = data["project"].orEmpty()
         val sessionLabel = data["session_label"].orEmpty()
-        val cwd = data["cwd"].orEmpty()
+        val sessionId = data["session_id"].orEmpty()
         val subText = if (sessionLabel.isNotBlank() && project.isNotBlank()) project else null
         val notificationId = infoNotificationIdSeq.incrementAndGet()
 
-        val tap = openSessionPending(context, cwd, requestCode = notificationId)
+        val tap = openSessionPending(context, sessionId, requestCode = notificationId)
 
         val builder = NotificationCompat.Builder(context, CHANNEL_INFO)
             .setSmallIcon(R.drawable.ic_clawd)
@@ -114,15 +114,15 @@ object NotificationFactory {
 
     /**
      * Tap intent for both approval and completion notifications: route into
-     * the session detail screen for `cwd`. If cwd is missing (older payload
-     * or test push), fall back to the launcher behaviour.
+     * the session detail screen for `sessionId`. If sessionId is missing
+     * (older payload or test push), fall back to the launcher behaviour.
      */
-    private fun openSessionPending(context: Context, cwd: String, requestCode: Int): PendingIntent {
+    private fun openSessionPending(context: Context, sessionId: String, requestCode: Int): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            if (cwd.isNotBlank()) {
+            if (sessionId.isNotBlank()) {
                 action = MainActivity.ACTION_OPEN_SESSION
-                putExtra(MainActivity.EXTRA_CWD, cwd)
+                putExtra(MainActivity.EXTRA_SESSION_ID, sessionId)
             }
         }
         return PendingIntent.getActivity(context, requestCode, intent, PENDING_FLAGS)

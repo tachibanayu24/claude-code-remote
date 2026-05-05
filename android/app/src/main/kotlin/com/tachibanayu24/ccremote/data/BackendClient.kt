@@ -77,15 +77,15 @@ class BackendClient(private val config: Config) {
         if (!res.status.isSuccess()) emptyList() else res.body<SessionsResponse>().sessions
     }.getOrDefault(emptyList())
 
-    suspend fun sessionDetail(cwd: String, limit: Int = 20): SessionDetailResponse? = runCatching {
+    suspend fun sessionDetail(sessionId: String, limit: Int = 20): SessionDetailResponse? = runCatching {
         val res: HttpResponse = http.get(
-            "${config.backendUrl}/v1/sessions/${encodeCwd(cwd)}/turns?limit=$limit",
+            "${config.backendUrl}/v1/sessions/${encodePathSegment(sessionId)}/turns?limit=$limit",
         )
         if (!res.status.isSuccess()) null else res.body<SessionDetailResponse>()
     }.getOrNull()
 
-    suspend fun postPrompt(cwd: String, text: String): Boolean = runCatching {
-        val res: HttpResponse = http.post("${config.backendUrl}/v1/sessions/${encodeCwd(cwd)}/prompts") {
+    suspend fun postPrompt(sessionId: String, text: String): Boolean = runCatching {
+        val res: HttpResponse = http.post("${config.backendUrl}/v1/sessions/${encodePathSegment(sessionId)}/prompts") {
             setBody(PromptCreateRequest(text))
         }
         res.status.isSuccess()
@@ -109,8 +109,8 @@ class BackendClient(private val config: Config) {
     }.getOrDefault(false)
 
     /** URLEncoder uses '+' for spaces (form encoding); path parsers expect %20. */
-    private fun encodeCwd(cwd: String): String =
-        URLEncoder.encode(cwd, StandardCharsets.UTF_8.name()).replace("+", "%20")
+    private fun encodePathSegment(value: String): String =
+        URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20")
 
     fun close() = http.close()
 }

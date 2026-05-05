@@ -7,6 +7,6 @@ package com.tachibanayu24.ccremote.ui
  */
 sealed interface Screen {
     object Home : Screen
-    data class Detail(val cwd: String) : Screen
+    data class Detail(val sessionId: String) : Screen
     object Settings : Screen
 }

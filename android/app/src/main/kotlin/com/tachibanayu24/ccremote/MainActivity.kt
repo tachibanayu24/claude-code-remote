@@ -75,14 +75,16 @@ class MainActivity : ComponentActivity() {
                             onSelectSession = vm::openSession,
                         )
                         is Screen.Detail -> {
-                            val fallback = state.sessions.firstOrNull { it.cwd == screen.cwd }?.project_name
-                                ?: screen.cwd.substringAfterLast('/')
+                            val sessionRow = state.sessions.firstOrNull { it.session_id == screen.sessionId }
+                            val fallback = sessionRow?.project_name
+                                ?: sessionRow?.cwd?.substringAfterLast('/')
+                                ?: "session"
                             SessionDetailScreen(
                                 detail = state.selectedDetail,
                                 fallbackProjectName = fallback,
                                 isSendingPrompt = state.isSendingPrompt,
                                 onBack = vm::closeSession,
-                                onSendPrompt = { text -> vm.sendPrompt(screen.cwd, text) },
+                                onSendPrompt = { text -> vm.sendPrompt(screen.sessionId, text) },
                                 onDecideApproval = vm::decideApproval,
                             )
                         }
@@ -110,8 +112,8 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         if (intent?.action != ACTION_OPEN_SESSION) return
-        val cwd = intent.getStringExtra(EXTRA_CWD)?.takeIf { it.isNotBlank() } ?: return
-        vm.openSession(cwd)
+        val sessionId = intent.getStringExtra(EXTRA_SESSION_ID)?.takeIf { it.isNotBlank() } ?: return
+        vm.openSession(sessionId)
     }
 
     private fun ensureNotificationPermission() {
@@ -128,6 +130,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val ACTION_OPEN_SESSION = "com.tachibanayu24.ccremote.action.OPEN_SESSION"
-        const val EXTRA_CWD = "cwd"
+        const val EXTRA_SESSION_ID = "session_id"
     }
 }
