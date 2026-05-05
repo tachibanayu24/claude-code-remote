@@ -1,23 +1,19 @@
 #!/usr/bin/env node
 // claude-code-remote: Claude Code Stop / PostToolUse hook.
-// Sends a one-shot push to phone when Claude finishes a turn that exceeded
-// the threshold. Permission approvals are NOT handled here — they go through
-// the MCP channel server (see channel/channel.mjs and Channels permission
-// relay). PostToolUse fires after each tool execution to clean up any pending
-// phone notifications when the user answered locally in the CLI.
+// Thin event forwarder. PC-only logic (jsonl reading) lives here; everything
+// else — threshold check, title/body formatting, FCM push, dismiss — runs on
+// the backend.
 //
 // Modes: stop | posttool
 
 import { readFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 
 const CLAUDE_HOME = join(homedir(), '.claude')
 const ENV_PATH = process.env.CC_REMOTE_ENV ?? join(CLAUDE_HOME, 'hooks/.env')
 
 const log = (msg) => process.stderr.write(`cc-remote-hook: ${msg}\n`)
-
-// ---------- Config ----------
 
 function loadEnv() {
   let text
@@ -48,28 +44,7 @@ async function readStdin() {
   }
 }
 
-// ---------- Backend client ----------
-
-function makeClient(env) {
-  const backend = env.CC_REMOTE_BACKEND_URL.replace(/\/$/, '')
-  const headers = {
-    'Authorization': `Bearer ${env.CC_REMOTE_SHARED_SECRET}`,
-    'Content-Type': 'application/json',
-  }
-  return async function post(path, payload) {
-    try {
-      await fetch(`${backend}${path}`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-      })
-    } catch (_) {
-      // best-effort, silent
-    }
-  }
-}
-
-// ---------- ai-title lookup (mirrors channel/channel.mjs#getSessionLabel) ----------
+// ---------- jsonl extraction (PC-only — backend can't see ~/.claude) ----------
 
 const encodeCwd = (cwd) => cwd.replace(/[\/.]/g, '-')
 
@@ -180,33 +155,6 @@ function lastAssistantTextFromJsonl(jsonl) {
   return ''
 }
 
-
-// ---------- Actions ----------
-
-/**
- * Forward raw turn data to backend. Title/body formatting lives server-side
- * so this script stays a thin event forwarder. The jsonl is parsed locally
- * because only the PC has access to `~/.claude/projects/...`.
- */
-async function notifyStop(post, input) {
-  const jsonl = readSessionJsonl(input.cwd, input.session_id)
-  const cwd = canonicalCwdFromJsonl(jsonl, input.cwd ?? '')
-  const startMs = lastUserPromptMsFromJsonl(jsonl)
-  await post('/v1/notifications', {
-    session_id: input.session_id ?? 'unknown',
-    cwd,
-    project_name: cwd ? basename(cwd) : 'unknown',
-    session_label: aiTitleFromJsonl(jsonl),
-    kind: 'completed',
-    elapsed_ms: startMs !== null ? Date.now() - startMs : null,
-    full_message: lastAssistantTextFromJsonl(jsonl),
-  })
-}
-
-async function dismissPending(post, input) {
-  await post('/v1/approvals/dismiss_pending', { cwd: input.cwd ?? '' })
-}
-
 // ---------- Main ----------
 
 const mode = process.argv[2]
@@ -214,29 +162,40 @@ const env = loadEnv()
 if (!env || !env.CC_REMOTE_BACKEND_URL || !env.CC_REMOTE_SHARED_SECRET) {
   process.exit(1)
 }
-const post = makeClient(env)
+const backend = env.CC_REMOTE_BACKEND_URL.replace(/\/$/, '')
 const input = await readStdin()
 
-function shouldNotifyStop(input, env) {
-  // Skip the completion push for short turns. Threshold defaults to 3 min,
-  // overridable via CC_REMOTE_STOP_THRESHOLD_MS in the env file. If the start
-  // time can't be determined, notify to avoid silently dropping signals.
-  const jsonl = readSessionJsonl(input.cwd, input.session_id)
-  const startMs = lastUserPromptMsFromJsonl(jsonl)
-  if (startMs === null) return true
-  const thresholdMs = Number.parseInt(env.CC_REMOTE_STOP_THRESHOLD_MS ?? '180000', 10)
-  return Date.now() - startMs >= thresholdMs
+async function post(path, payload) {
+  try {
+    await fetch(`${backend}${path}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.CC_REMOTE_SHARED_SECRET}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    })
+  } catch (_) {
+    // best-effort, silent
+  }
 }
 
 switch (mode) {
-  case 'stop':
-    await dismissPending(post, input)
-    if (shouldNotifyStop(input, env)) {
-      await notifyStop(post, input)
-    }
+  case 'stop': {
+    const jsonl = readSessionJsonl(input.cwd, input.session_id)
+    const cwd = canonicalCwdFromJsonl(jsonl, input.cwd ?? '')
+    const startMs = lastUserPromptMsFromJsonl(jsonl)
+    await post('/v1/hook/stop', {
+      session_id: input.session_id ?? '',
+      cwd,
+      ai_title: aiTitleFromJsonl(jsonl),
+      elapsed_ms: startMs !== null ? Date.now() - startMs : null,
+      full_message: lastAssistantTextFromJsonl(jsonl),
+    })
     break
+  }
   case 'posttool':
-    await dismissPending(post, input)
+    await post('/v1/hook/posttool', { cwd: input.cwd ?? '' })
     break
   default:
     log(`unknown mode '${mode}' (expected: stop | posttool)`)

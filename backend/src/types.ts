@@ -3,6 +3,7 @@ export type Bindings = {
   SHARED_SECRET: string
   FCM_SERVICE_ACCOUNT_JSON: string
   FCM_PROJECT_ID: string
+  STOP_THRESHOLD_MS?: string
 }
 
 export type FcmEnv = Pick<Bindings, 'FCM_SERVICE_ACCOUNT_JSON' | 'FCM_PROJECT_ID'>
@@ -31,14 +32,19 @@ export interface ApprovalRespondRequest {
   add_to_allowlist?: boolean
 }
 
-export interface NotificationCreateRequest {
+export interface HookStopRequest {
   session_id: string
   cwd: string
-  project_name: string
-  session_label?: string
-  kind: 'completed' | string
-  elapsed_ms?: number | null
+  ai_title?: string
+  elapsed_ms: number | null
   full_message?: string
+  // Dev-only: skip the FCM push and D1 insert; return what would have been sent.
+  // Used by smoke tests so the phone doesn't get buzzed.
+  dry_run?: boolean
+}
+
+export interface HookPosttoolRequest {
+  cwd: string
 }
 
 export interface ApprovalRow {

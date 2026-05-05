@@ -56,15 +56,16 @@ class BackendClient(private val config: Config) {
     }
 
     suspend fun sendTestNotification() {
-        http.post("${config.backendUrl}/v1/notifications") {
+        http.post("${config.backendUrl}/v1/hook/stop") {
             setBody(
-                TestNotificationRequest(
+                HookStopRequest(
                     session_id = "android-test",
-                    cwd = "/Users/test",
-                    project_name = "test",
-                    kind = "completed",
-                    title = "✅ test (from Android)",
-                    body = "test",
+                    cwd = "/Users/test/android-test",
+                    ai_title = "test (from Android)",
+                    // Pass an elapsed value over any reasonable threshold so the
+                    // backend always pushes the FCM for this manual test.
+                    elapsed_ms = 24L * 60L * 60L * 1000L,
+                    full_message = "test",
                 )
             )
         }

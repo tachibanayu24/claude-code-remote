@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { formatElapsed, previewLine } from './format'
+import { basename, formatElapsed, previewLine } from './format'
 import { notifyApprovalRequest, notifyApprovalResolved, notifyInfo } from './push'
 import type {
   ApprovalCreateRequest,
@@ -7,7 +7,8 @@ import type {
   ApprovalRow,
   Bindings,
   DeviceRegisterRequest,
-  NotificationCreateRequest,
+  HookPosttoolRequest,
+  HookStopRequest,
 } from './types'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -127,77 +128,81 @@ app.post('/v1/approvals/:id/respond', async (c) => {
   return c.json({ ok: true, status: body.decision, add_to_allowlist: allowlistFlag === 1 })
 })
 
-app.post('/v1/approvals/dismiss_pending', async (c) => {
-  const body = (await c.req.json<{ cwd?: string }>().catch(() => ({}))) as { cwd?: string }
-  const cwd = body.cwd
+async function dismissPendingApprovals(db: D1Database, env: Bindings, cwd: string): Promise<number> {
   const baseWhere = "status = 'pending'"
   const where = cwd ? `${baseWhere} AND cwd = ?` : baseWhere
-  const filterArgs = cwd ? [cwd] : []
-
-  const ids = await c.env.DB.prepare(`SELECT id FROM approvals WHERE ${where}`)
-    .bind(...filterArgs)
+  const args = cwd ? [cwd] : []
+  const ids = await db.prepare(`SELECT id FROM approvals WHERE ${where}`)
+    .bind(...args)
     .all<{ id: string }>()
   const dismissed = (ids.results ?? []).map((r) => r.id)
-  if (dismissed.length === 0) return c.json({ ok: true, dismissed: 0 })
-
-  await c.env.DB.prepare(
-    `UPDATE approvals SET status = 'expired', resolved_at = ? WHERE ${where}`
-  )
-    .bind(nowSec(), ...filterArgs)
+  if (dismissed.length === 0) return 0
+  await db.prepare(`UPDATE approvals SET status = 'expired', resolved_at = ? WHERE ${where}`)
+    .bind(nowSec(), ...args)
     .run()
-
   for (const id of dismissed) {
-    await notifyApprovalResolved(c.env, c.env.DB, {
+    await notifyApprovalResolved(env, db, {
       request_id: id,
       decision: 'expired',
       resolved_by: 'cli',
     })
   }
-  return c.json({ ok: true, dismissed: dismissed.length })
-})
+  return dismissed.length
+}
 
-// ===== Notifications =====
+// ===== Hook =====
 
-app.post('/v1/notifications', async (c) => {
-  const body = await c.req.json<NotificationCreateRequest>()
-  const id = crypto.randomUUID()
-  const fullMessage = body.full_message ?? ''
+app.post('/v1/hook/stop', async (c) => {
+  const body = await c.req.json<HookStopRequest>()
+  const cwd = body.cwd ?? ''
+  const project = basename(cwd) || 'unknown'
   const elapsedMs = body.elapsed_ms ?? null
-  // Display strings are built here so the PC hook stays a thin event forwarder.
-  const titleHead = body.session_label || body.project_name
-  const prefix = body.kind === 'completed' ? '✅' : '⚠️'
-  const title = `${prefix} ${titleHead}`
-  const summary = body.kind === 'completed'
-    ? [formatElapsed(elapsedMs), previewLine(fullMessage)].filter(Boolean).join(' · ')
-    : ''
+  const fullMessage = body.full_message ?? ''
+  const aiTitle = body.ai_title ?? ''
+  const dryRun = body.dry_run === true
 
+  const dismissed = dryRun ? 0 : await dismissPendingApprovals(c.env.DB, c.env, cwd)
+
+  // Threshold gate: skip the FCM push for short turns. Backend-side so the PC
+  // hook doesn't need its own env knob.
+  const threshold = Number.parseInt(c.env.STOP_THRESHOLD_MS ?? '180000', 10)
+  if (elapsedMs !== null && elapsedMs < threshold) {
+    return c.json({ ok: true, dismissed, notified: 0, skipped: 'below_threshold', dry_run: dryRun })
+  }
+
+  const titleHead = aiTitle || project
+  const title = `✅ ${titleHead}`
+  const summary = [formatElapsed(elapsedMs), previewLine(fullMessage)].filter(Boolean).join(' · ')
+
+  if (dryRun) {
+    return c.json({ ok: true, dry_run: true, would: { title, body: summary } })
+  }
+
+  const id = crypto.randomUUID()
   await c.env.DB.prepare(
     `INSERT INTO notifications (id, session_id, cwd, project_name, kind, title, body, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)`
   )
-    .bind(
-      id,
-      body.session_id,
-      body.cwd,
-      body.project_name,
-      body.kind,
-      title,
-      summary || null,
-      nowSec()
-    )
+    .bind(id, body.session_id ?? '', cwd, project, title, summary || null, nowSec())
     .run()
 
   const notified = await notifyInfo(c.env, c.env.DB, {
-    kind: body.kind,
-    project: body.project_name,
-    session_label: body.session_label ?? '',
+    kind: 'completed',
+    project,
+    session_label: aiTitle,
     title,
     body: summary,
-    session_id: body.session_id,
+    session_id: body.session_id ?? '',
     elapsed_ms: elapsedMs != null ? String(elapsedMs) : '',
     full_message: fullMessage,
   })
-  return c.json({ ok: true, id, notified })
+  return c.json({ ok: true, id, dismissed, notified })
+})
+
+app.post('/v1/hook/posttool', async (c) => {
+  const body = await c.req.json<HookPosttoolRequest>().catch(() => ({ cwd: '' } as HookPosttoolRequest))
+  const dismissed = await dismissPendingApprovals(c.env.DB, c.env, body.cwd ?? '')
+  return c.json({ ok: true, dismissed })
 })
 
 export default app

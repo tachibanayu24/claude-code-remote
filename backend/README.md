@@ -63,11 +63,12 @@ curl https://claude-code-remote.<subdomain>.workers.dev/health
 ### Phase 0（実装済み）
 - `GET /health` — 認証不要
 
-### Phase 1（未実装）
+### Phase 1
 - `POST /v1/devices/register` — FCM トークン登録
 - `POST /v1/approvals` — 承認リクエスト作成（PC hook → backend）
 - `GET /v1/approvals/:id` — 承認状態取得（PC hook ポーリング）
 - `POST /v1/approvals/:id/respond` — 承認応答（Android → backend）
-- `POST /v1/notifications` — 通知送信（PC hook → backend）
+- `POST /v1/hook/stop` — Stop hook（dismiss + threshold 判定 + 完了通知）
+- `POST /v1/hook/posttool` — PostToolUse hook（pending dismiss のみ）
 
 設計詳細は [`../docs/handover.md`](../docs/handover.md)。

@@ -24,11 +24,10 @@ data class ApprovalRespondRequest(
 )
 
 @Serializable
-data class TestNotificationRequest(
+data class HookStopRequest(
     val session_id: String,
     val cwd: String,
-    val project_name: String,
-    val kind: String,
-    val title: String,
-    val body: String? = null,
+    val ai_title: String? = null,
+    val elapsed_ms: Long? = null,
+    val full_message: String? = null,
 )

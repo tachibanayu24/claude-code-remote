@@ -16,3 +16,9 @@ migrations_dir = "migrations"
 #   SHARED_SECRET            — bearer token shared with PC hook & Android app
 #   FCM_SERVICE_ACCOUNT_JSON — GCP service account JSON for FCM v1
 #   FCM_PROJECT_ID           — GCP project ID for FCM
+
+[vars]
+# Skip the completion push for stop turns shorter than this. PC hook always
+# forwards every Stop event; the threshold is enforced here so it can be
+# tuned without redeploying the hook script.
+STOP_THRESHOLD_MS = "180000"

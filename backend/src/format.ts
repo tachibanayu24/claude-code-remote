@@ -15,3 +15,10 @@ export function previewLine(text: string | undefined, max = 120): string {
   const oneLine = text.replace(/\s+/g, ' ').trim()
   return oneLine.length > max ? oneLine.slice(0, max - 1) + '…' : oneLine
 }
+
+export function basename(p: string | undefined): string {
+  if (!p) return ''
+  const trimmed = p.replace(/\/+$/, '')
+  const i = trimmed.lastIndexOf('/')
+  return i === -1 ? trimmed : trimmed.slice(i + 1)
+}
