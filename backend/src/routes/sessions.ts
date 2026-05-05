@@ -24,14 +24,16 @@ const RECENT_DELIVERED_TTL_SEC = 15
 
 app.post('/heartbeat', async (c) => {
   const body = await readJson<SessionHeartbeatRequest>(c.req.raw)
-  if (!body?.cwd) return c.json({ error: 'cwd required' }, 400)
+  if (!body?.session_id || !body.cwd) {
+    return c.json({ error: 'session_id and cwd required' }, 400)
+  }
   const project = basename(body.cwd) || 'unknown'
   const now = nowSec()
   await c.env.DB.prepare(
-    `INSERT INTO sessions (cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat, updated_at, current_prompt, current_assistant_text)
+    `INSERT INTO sessions (session_id, cwd, project_name, ai_title, jsonl_mtime, last_heartbeat, updated_at, current_prompt, current_assistant_text)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(cwd) DO UPDATE SET
-       session_id = excluded.session_id,
+     ON CONFLICT(session_id) DO UPDATE SET
+       cwd = excluded.cwd,
        project_name = excluded.project_name,
        ai_title = COALESCE(excluded.ai_title, sessions.ai_title),
        jsonl_mtime = excluded.jsonl_mtime,
@@ -41,8 +43,8 @@ app.post('/heartbeat', async (c) => {
        current_assistant_text = excluded.current_assistant_text`
   )
     .bind(
+      body.session_id,
       body.cwd,
-      body.session_id ?? null,
       project,
       body.ai_title ?? null,
       body.jsonl_mtime ?? null,
@@ -61,8 +63,8 @@ app.get('/', async (c) => {
   c.executionCtx.waitUntil(cleanupStaleSessions(c.env.DB))
 
   const batchRes = await c.env.DB.batch<{
-    cwd?: string
     session_id?: string
+    cwd?: string
     project_name?: string
     ai_title?: string
     jsonl_mtime?: number
@@ -71,23 +73,23 @@ app.get('/', async (c) => {
     cnt?: number
   }>([
     c.env.DB.prepare(
-      `SELECT cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat, current_prompt
+      `SELECT session_id, cwd, project_name, ai_title, jsonl_mtime, last_heartbeat, current_prompt
        FROM sessions ORDER BY last_heartbeat DESC`
     ),
     c.env.DB.prepare(
-      "SELECT cwd, COUNT(*) as cnt FROM approvals WHERE status='pending' GROUP BY cwd"
+      "SELECT session_id, COUNT(*) as cnt FROM approvals WHERE status='pending' GROUP BY session_id"
     ),
   ])
   const sessionsRes = batchRes[0]!
   const pendingRes = batchRes[1]!
   const pendingMap = new Map(
-    (pendingRes.results ?? []).map((r) => [r.cwd as string, (r.cnt as number) ?? 0])
+    (pendingRes.results ?? []).map((r) => [r.session_id as string, (r.cnt as number) ?? 0])
   )
 
   const nowMs = Date.now()
   const sessions = (sessionsRes.results ?? []).map((r) => {
     const row = r as unknown as SessionRow
-    const pendingCount = pendingMap.get(row.cwd) ?? 0
+    const pendingCount = pendingMap.get(row.session_id) ?? 0
     const heartbeatAgeSec = Math.floor(nowMs / 1000) - row.last_heartbeat
     // jsonl_mtime is a fractional ms epoch on macOS — floor before exposing
     // so JSON consumers (Android Long) don't fail to deserialize.
@@ -98,8 +100,8 @@ app.get('/', async (c) => {
     else if (jsonlAgeMs !== null && jsonlAgeMs < SESSION_WORKING_TTL_MS) state = 'working'
     else state = 'idle'
     return {
-      cwd: row.cwd,
       session_id: row.session_id,
+      cwd: row.cwd,
       project_name: row.project_name,
       ai_title: row.ai_title,
       current_prompt: row.current_prompt,
@@ -112,9 +114,9 @@ app.get('/', async (c) => {
   return c.json({ sessions })
 })
 
-app.get('/:cwd/turns', async (c) => {
-  const cwd = decodeURIComponent(c.req.param('cwd'))
-  if (!cwd) return c.json({ error: 'cwd required' }, 400)
+app.get('/:sid/turns', async (c) => {
+  const sid = c.req.param('sid')
+  if (!sid) return c.json({ error: 'session_id required' }, 400)
   const limitParam = Number.parseInt(c.req.query('limit') ?? '', 10)
   const limit = Number.isFinite(limitParam) && limitParam > 0 && limitParam <= TURNS_MAX_LIMIT
     ? limitParam
@@ -123,37 +125,33 @@ app.get('/:cwd/turns', async (c) => {
   c.executionCtx.waitUntil(cleanupOldTurns(c.env.DB))
 
   const session = await c.env.DB.prepare(
-    `SELECT cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat, current_prompt, current_assistant_text
-     FROM sessions WHERE cwd = ?`
-  ).bind(cwd).first<SessionRow>()
+    `SELECT session_id, cwd, project_name, ai_title, jsonl_mtime, last_heartbeat, current_prompt, current_assistant_text
+     FROM sessions WHERE session_id = ?`
+  ).bind(sid).first<SessionRow>()
   if (!session) return c.json({ error: 'not found' }, 404)
 
   const detailBatch = await c.env.DB.batch<unknown>([
     c.env.DB.prepare(
       `SELECT id, user_prompt, assistant_text, tool_summary, elapsed_ms, ended_at
-       FROM turns WHERE cwd = ? ORDER BY ended_at DESC LIMIT ?`
-    ).bind(cwd, limit),
+       FROM turns WHERE session_id = ? ORDER BY ended_at DESC LIMIT ?`
+    ).bind(sid, limit),
     c.env.DB.prepare(
       `SELECT id, tool_name, tool_input, created_at
-       FROM approvals WHERE cwd = ? AND status = 'pending' ORDER BY created_at ASC`
-    ).bind(cwd),
-    // Queued prompts (phone POST /prompts → channel.mjs drain pending). Surfaced
-    // so the app can echo the user's just-sent message immediately, before
+       FROM approvals WHERE session_id = ? AND status = 'pending' ORDER BY created_at ASC`
+    ).bind(sid),
+    // Queued prompts (phone POST → channel.mjs drain pending). Surfaced so
+    // the app can echo the user's just-sent message immediately, before
     // channel.mjs delivers and the heartbeat picks it up as `current_prompt`.
-    //
-    // Recently-delivered prompts are included too — there's a 2-3s gap between
-    // channel.mjs marking `delivered` and CC actually writing the user entry
-    // to jsonl (which is what heartbeat reads). Without this, the queued
-    // bubble flickers off then the in-flight bubble flickers on. The Android
-    // client de-duplicates by text against current_prompt so we don't render
-    // both bubbles at once.
+    // Recently-delivered prompts are kept for a short grace window so the
+    // queued bubble doesn't flicker off; the Android client de-duplicates by
+    // text against current_prompt and committed turn user_prompts.
     c.env.DB.prepare(
       `SELECT id, text, created_at FROM prompts
-       WHERE cwd = ? AND (
+       WHERE session_id = ? AND (
          status = 'queued'
          OR (status = 'delivered' AND delivered_at >= ?)
        ) ORDER BY created_at ASC`
-    ).bind(cwd, nowSec() - RECENT_DELIVERED_TTL_SEC),
+    ).bind(sid, nowSec() - RECENT_DELIVERED_TTL_SEC),
   ])
   const turnsRes = detailBatch[0]!
   const pendingRes = detailBatch[1]!
@@ -192,8 +190,8 @@ app.get('/:cwd/turns', async (c) => {
 
   return c.json({
     session: {
-      cwd: session.cwd,
       session_id: session.session_id,
+      cwd: session.cwd,
       project_name: session.project_name,
       ai_title: session.ai_title,
       current_prompt: session.current_prompt,

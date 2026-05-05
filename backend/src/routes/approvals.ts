@@ -12,8 +12,8 @@ const app = new Hono<{ Bindings: Bindings }>()
 
 app.post('/', async (c) => {
   const body = await readJson<ApprovalCreateRequest>(c.req.raw)
-  if (!body?.project_name || !body.tool_name) {
-    return c.json({ error: 'project_name and tool_name required' }, 400)
+  if (!body?.project_name || !body.tool_name || !body.session_id) {
+    return c.json({ error: 'session_id, project_name, tool_name required' }, 400)
   }
   const id = crypto.randomUUID()
   // tool_input is preserved in D1 for the future history view (description +
@@ -28,7 +28,7 @@ app.post('/', async (c) => {
   )
     .bind(
       id,
-      body.session_id ?? '',
+      body.session_id,
       body.cwd ?? '',
       body.project_name,
       body.tool_name,
@@ -39,6 +39,7 @@ app.post('/', async (c) => {
 
   const notified = await notifyApprovalRequest(c.env, c.env.DB, {
     request_id: id,
+    session_id: body.session_id,
     cwd: body.cwd ?? '',
     project: body.project_name,
     session_label: body.session_label ?? '',

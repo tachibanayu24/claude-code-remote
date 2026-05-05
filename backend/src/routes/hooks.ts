@@ -10,6 +10,7 @@ app.post('/stop', async (c) => {
   const body = await readJson<HookStopRequest>(c.req.raw)
   if (!body) return c.json({ error: 'invalid body' }, 400)
   const cwd = body.cwd ?? ''
+  const sessionId = body.session_id ?? ''
   const project = basename(cwd) || 'unknown'
   const elapsedMs = body.elapsed_ms ?? null
   const fullMessage = body.full_message ?? ''
@@ -20,12 +21,15 @@ app.post('/stop', async (c) => {
     : null
   const dryRun = body.dry_run === true
 
-  const dismissed = dryRun ? 0 : await dismissPendingApprovals(c.env.DB, c.env, cwd)
+  // Dismiss only this session's pending approvals — leave concurrent CCs in
+  // the same cwd untouched. Skips when sessionId is empty (very old hook
+  // payload) so we don't accidentally expire every row.
+  const dismissed = dryRun ? 0 : await dismissPendingApprovals(c.env.DB, c.env, sessionId)
 
   // Persist the turn snapshot regardless of FCM threshold — the detail screen
   // wants every turn, not just the long ones.
   const turnId = crypto.randomUUID()
-  if (!dryRun && cwd) {
+  if (!dryRun && cwd && sessionId) {
     await c.env.DB.batch([
       c.env.DB.prepare(
         `INSERT INTO turns (id, cwd, session_id, user_prompt, assistant_text, tool_summary, elapsed_ms, ended_at)
@@ -33,7 +37,7 @@ app.post('/stop', async (c) => {
       ).bind(
         turnId,
         cwd,
-        body.session_id ?? '',
+        sessionId,
         userPrompt || null,
         fullMessage || null,
         toolSummary,
@@ -42,10 +46,11 @@ app.post('/stop', async (c) => {
       ),
       // The Stop event ends an in-flight turn — clear both the live prompt
       // marker and the partial assistant text so the detail screen stops
-      // showing them as "current".
+      // showing them as "current". Scoped to session_id so concurrent CC in
+      // the same cwd aren't nulled out.
       c.env.DB.prepare(
-        'UPDATE sessions SET current_prompt = NULL, current_assistant_text = NULL WHERE cwd = ?'
-      ).bind(cwd),
+        'UPDATE sessions SET current_prompt = NULL, current_assistant_text = NULL WHERE session_id = ?'
+      ).bind(sessionId),
     ])
   }
 
@@ -69,7 +74,7 @@ app.post('/stop', async (c) => {
     `INSERT INTO notifications (id, session_id, cwd, project_name, kind, title, body, created_at)
      VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)`
   )
-    .bind(id, body.session_id ?? '', cwd, project, title, summary || null, nowSec())
+    .bind(id, sessionId, cwd, project, title, summary || null, nowSec())
     .run()
 
   const notified = await notifyInfo(c.env, c.env.DB, {
@@ -79,7 +84,7 @@ app.post('/stop', async (c) => {
     session_label: aiTitle,
     title,
     body: summary,
-    session_id: body.session_id ?? '',
+    session_id: sessionId,
     elapsed_ms: elapsedMs != null ? String(elapsedMs) : '',
     full_message: fullMessage,
   })
@@ -88,10 +93,10 @@ app.post('/stop', async (c) => {
 
 app.post('/posttool', async (c) => {
   const body = await readJson<HookPosttoolRequest>(c.req.raw)
-  // Reject empty cwd: dismissPendingApprovals('') would expire pending rows
-  // for *every* session, which collapses the multi-session use case.
-  if (!body?.cwd) return c.json({ error: 'cwd required' }, 400)
-  const dismissed = await dismissPendingApprovals(c.env.DB, c.env, body.cwd)
+  // Reject empty session_id: dismissPendingApprovals('') would expire pending
+  // rows for *every* session, which collapses the multi-session use case.
+  if (!body?.session_id) return c.json({ error: 'session_id required' }, 400)
+  const dismissed = await dismissPendingApprovals(c.env.DB, c.env, body.session_id)
   return c.json({ ok: true, dismissed })
 })
 

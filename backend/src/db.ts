@@ -4,25 +4,24 @@ import type { Bindings } from './types'
 export const nowSec = () => Math.floor(Date.now() / 1000)
 
 /**
- * Atomically expire all pending approvals for `cwd` and notify Android of each
- * one. Uses `RETURNING` so the UPDATE and the ID extraction happen in a single
- * statement — without that, two concurrent calls (e.g. two Stop hooks for the
- * same cwd) would each see the rows as pending and fan out duplicate FCM
- * pushes.
+ * Atomically expire all pending approvals for `sessionId` and notify Android
+ * of each one. Uses `RETURNING` so the UPDATE and the ID extraction happen in
+ * a single statement — without that, two concurrent calls would each see the
+ * rows as pending and fan out duplicate FCM pushes.
  *
- * cwd is required — '' would match every row. Callers must validate.
+ * sessionId is required — '' would match every row. Callers must validate.
  */
 export async function dismissPendingApprovals(
   db: D1Database,
   env: Bindings,
-  cwd: string,
+  sessionId: string,
 ): Promise<number> {
-  if (!cwd) return 0
+  if (!sessionId) return 0
   const res = await db.prepare(
     `UPDATE approvals SET status = 'expired', resolved_at = ?
-     WHERE status = 'pending' AND cwd = ?
+     WHERE status = 'pending' AND session_id = ?
      RETURNING id`,
-  ).bind(nowSec(), cwd).all<{ id: string }>()
+  ).bind(nowSec(), sessionId).all<{ id: string }>()
   const ids = (res.results ?? []).map((r) => r.id)
   if (ids.length === 0) return 0
   await Promise.all(ids.map((id) =>

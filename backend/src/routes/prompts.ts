@@ -4,26 +4,33 @@ import type { Bindings, PromptCreateRequest, PromptRow } from '../types'
 
 const app = new Hono<{ Bindings: Bindings }>()
 
-app.post('/sessions/:cwd/prompts', async (c) => {
-  const cwd = decodeURIComponent(c.req.param('cwd'))
-  if (!cwd) return c.json({ error: 'cwd required' }, 400)
+app.post('/sessions/:sid/prompts', async (c) => {
+  const sid = c.req.param('sid')
+  if (!sid) return c.json({ error: 'session_id required' }, 400)
   const body = await readJson<PromptCreateRequest>(c.req.raw)
   const text = (body?.text ?? '').trim()
   if (!text) return c.json({ error: 'text required' }, 400)
+  // Look up the session's cwd so the prompts row keeps it for display, but
+  // the routing key is session_id — only that CC's channel.mjs will drain it.
+  const session = await c.env.DB.prepare('SELECT cwd FROM sessions WHERE session_id = ?')
+    .bind(sid)
+    .first<{ cwd: string }>()
+  if (!session) return c.json({ error: 'session not found' }, 404)
   const id = crypto.randomUUID()
   await c.env.DB.prepare(
-    `INSERT INTO prompts (id, cwd, text, status, created_at) VALUES (?, ?, ?, 'queued', ?)`
-  ).bind(id, cwd, text, nowSec()).run()
+    `INSERT INTO prompts (id, session_id, cwd, text, status, created_at)
+     VALUES (?, ?, ?, ?, 'queued', ?)`
+  ).bind(id, sid, session.cwd, text, nowSec()).run()
   return c.json({ ok: true, id })
 })
 
-app.get('/sessions/:cwd/prompts/queued', async (c) => {
-  const cwd = decodeURIComponent(c.req.param('cwd'))
-  if (!cwd) return c.json({ error: 'cwd required' }, 400)
+app.get('/sessions/:sid/prompts/queued', async (c) => {
+  const sid = c.req.param('sid')
+  if (!sid) return c.json({ error: 'session_id required' }, 400)
   const res = await c.env.DB.prepare(
-    `SELECT id, cwd, text, status, created_at FROM prompts
-     WHERE cwd = ? AND status = 'queued' ORDER BY created_at ASC`
-  ).bind(cwd).all<PromptRow>()
+    `SELECT id, session_id, cwd, text, status, created_at FROM prompts
+     WHERE session_id = ? AND status = 'queued' ORDER BY created_at ASC`
+  ).bind(sid).all<PromptRow>()
   return c.json({ prompts: res.results ?? [] })
 })
 
@@ -34,8 +41,6 @@ app.post('/prompts/:id/delivered', async (c) => {
      WHERE id = ? AND status = 'queued'`
   ).bind(nowSec(), id).run()
   if ((result.meta?.changes ?? 0) === 0) {
-    // 409 lets channel.mjs distinguish "another channel claimed it first"
-    // (expected race) from a truly missing id (programming error).
     return c.json({ error: 'already delivered or not found' }, 409)
   }
   return c.json({ ok: true })

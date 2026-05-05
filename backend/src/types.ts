@@ -15,7 +15,7 @@ export interface DeviceRegisterRequest {
 }
 
 export interface ApprovalCreateRequest {
-  session_id?: string
+  session_id: string  // required: which CC instance this prompt is for
   cwd?: string
   project_name: string
   session_label?: string
@@ -49,12 +49,13 @@ export interface HookStopRequest {
 }
 
 export interface HookPosttoolRequest {
+  session_id: string
   cwd: string
 }
 
 export interface SessionHeartbeatRequest {
+  session_id: string  // required — keying changed from cwd to session_id
   cwd: string
-  session_id?: string
   ai_title?: string
   jsonl_mtime?: number  // ms epoch
   current_prompt?: string | null  // null clears, undefined leaves untouched
@@ -62,8 +63,8 @@ export interface SessionHeartbeatRequest {
 }
 
 export interface SessionRow {
+  session_id: string
   cwd: string
-  session_id: string | null
   project_name: string
   ai_title: string | null
   jsonl_mtime: number | null
@@ -87,6 +88,7 @@ export interface PromptCreateRequest {
 
 export interface PromptRow {
   id: string
+  session_id: string
   cwd: string
   text: string
   status: 'queued' | 'delivered'
