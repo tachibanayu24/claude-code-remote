@@ -79,7 +79,6 @@ private const val SESSION_LIVE_TTL_SEC = 30L
 @Composable
 fun SessionDetailScreen(
     detail: SessionDetailResponse?,
-    fallbackProjectName: String,
     isSendingPrompt: Boolean,
     onBack: () -> Unit,
     onSendPrompt: (String) -> Unit,
@@ -94,11 +93,15 @@ fun SessionDetailScreen(
             // visible above the keyboard without us recomputing layout.
             .windowInsetsPadding(WindowInsets.systemBars),
     ) {
-        TopBar(
-            projectName = detail?.session?.project_name ?: fallbackProjectName,
-            aiTitle = detail?.session?.ai_title,
-            onBack = onBack,
-        )
+        // Title is just the ai_title (or a session-id discriminator if CC
+        // hasn't named it yet). The project name is already on Home and
+        // would be redundant noise here.
+        val sessionId = detail?.session?.session_id
+        val aiTitle = detail?.session?.ai_title?.takeIf { it.isNotBlank() }
+        val titleText = aiTitle
+            ?: sessionId?.let { "#${it.takeLast(6)}" }
+            ?: ""
+        TopBar(title = titleText, onBack = onBack)
 
         // Backend returns turns newest-first (DESC). Reverse for chat-style
         // chronological order: oldest at top, latest at bottom.
@@ -210,8 +213,7 @@ fun SessionDetailScreen(
 
 @Composable
 private fun TopBar(
-    projectName: String,
-    aiTitle: String?,
+    title: String,
     onBack: () -> Unit,
 ) {
     Row(
@@ -226,20 +228,13 @@ private fun TopBar(
                 contentDescription = "戻る",
             )
         }
-        Column {
+        if (title.isNotBlank()) {
             Text(
-                text = projectName,
+                text = title,
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary,
                 fontFamily = FontFamily.Monospace,
             )
-            if (!aiTitle.isNullOrBlank()) {
-                Text(
-                    text = aiTitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
         }
     }
 }

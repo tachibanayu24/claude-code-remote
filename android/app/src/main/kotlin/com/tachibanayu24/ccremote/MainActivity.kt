@@ -88,20 +88,13 @@ class MainActivity : ComponentActivity() {
                             onOpenSettings = vm::openSettings,
                             onSelectSession = vm::openSession,
                         )
-                        is Screen.Detail -> {
-                            val sessionRow = state.sessions.firstOrNull { it.session_id == screen.sessionId }
-                            val fallback = sessionRow?.project_name
-                                ?: sessionRow?.cwd?.substringAfterLast('/')
-                                ?: "session"
-                            SessionDetailScreen(
-                                detail = state.selectedDetail,
-                                fallbackProjectName = fallback,
-                                isSendingPrompt = state.isSendingPrompt,
-                                onBack = vm::closeSession,
-                                onSendPrompt = { text -> vm.sendPrompt(screen.sessionId, text) },
-                                onDecideApproval = vm::decideApproval,
-                            )
-                        }
+                        is Screen.Detail -> SessionDetailScreen(
+                            detail = state.selectedDetail,
+                            isSendingPrompt = state.isSendingPrompt,
+                            onBack = vm::closeSession,
+                            onSendPrompt = { text -> vm.sendPrompt(screen.sessionId, text) },
+                            onDecideApproval = vm::decideApproval,
+                        )
                         Screen.Settings -> SettingsScreen(
                             config = current,
                             fcmToken = state.fcmToken,
