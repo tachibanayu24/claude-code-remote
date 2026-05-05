@@ -94,11 +94,11 @@ const CHANNEL_WRAPPER_RE = /^<channel\b[^>]*>\n?([\s\S]*?)\n?<\/channel>\s*$/
  *
  * Both shapes are real user input. The parsers below normalize over them.
  */
-export function isChannelInjectedPrompt(e) {
+function isChannelInjectedPrompt(e) {
   return e.origin?.kind === 'channel'
 }
 
-export function isChannelQueuedCommand(e) {
+function isChannelQueuedCommand(e) {
   return (
     e.type === 'attachment' &&
     e.attachment?.type === 'queued_command' &&
@@ -106,7 +106,7 @@ export function isChannelQueuedCommand(e) {
   )
 }
 
-export function isSyntheticUserEntry(e) {
+function isSyntheticUserEntry(e) {
   if (isChannelInjectedPrompt(e)) return false
   if (e.isMeta || e.isCompactSummary || e.isVisibleInTranscriptOnly) return true
   const c = e.message?.content
@@ -125,7 +125,7 @@ function unwrapChannel(text) {
   return m ? m[1].trim() : text.trim()
 }
 
-export function userEntryText(e) {
+function userEntryText(e) {
   if (isChannelQueuedCommand(e)) {
     return unwrapChannel(String(e.attachment?.prompt ?? ''))
   }
