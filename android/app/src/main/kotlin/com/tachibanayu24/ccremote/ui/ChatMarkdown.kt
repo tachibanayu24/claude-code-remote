@@ -1,11 +1,21 @@
 package com.tachibanayu24.ccremote.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
@@ -29,13 +39,19 @@ private val FENCE_RE = Regex("```([a-zA-Z0-9_+-]*)\\s*\\n([\\s\\S]*?)```")
 private val INLINE_RE = Regex(
     "\\*\\*(?<bold>[^*]+)\\*\\*|`(?<code>[^`\\n]+)`|\\[(?<linkText>[^\\]]+)\\]\\((?<linkUrl>[^)]+)\\)"
 )
+// Pipe-table line: starts and ends with a pipe (after trim) and contains at
+// least one cell separator. Conservative — won't false-positive on prose
+// like "see |here| for details".
+private val TABLE_LINE_RE = Regex("^\\s*\\|.*\\|\\s*$")
+// Separator-row cell: 3+ dashes, optionally surrounded by `:` for alignment
+// markers. We don't honor alignment yet — every cell is left-aligned.
+private val TABLE_SEPARATOR_CELL_RE = Regex("^\\s*:?-{3,}:?\\s*$")
 
 /**
  * Lightweight chat-text renderer. Handles `**bold**`, `` `inline code` ``,
- * markdown links `[text](url)` (tappable via [LinkAnnotation]), and
- * ```` ```fenced code blocks``` ````. Everything else is rendered as
- * monospace plain text. We deliberately avoid pulling in a markdown library
- * — the cost-benefit doesn't justify it for these forms.
+ * markdown links `[text](url)` (tappable via [LinkAnnotation]), pipe-style
+ * tables, and ```` ```fenced code blocks``` ````. Headings and lists pass
+ * through as raw monospace text — that matches what CC's own terminal does.
  */
 @Composable
 fun ChatMarkdown(
@@ -44,7 +60,7 @@ fun ChatMarkdown(
     style: TextStyle = MaterialTheme.typography.bodyMedium,
 ) {
     // Splitting only depends on the source text, not on Compose state.
-    val blocks = remember(text) { splitByFencedCode(text) }
+    val blocks = remember(text) { splitChatBlocks(text) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         blocks.forEach { block ->
             when (block) {
@@ -57,6 +73,7 @@ fun ChatMarkdown(
                     code = block.code,
                     language = resolveLanguage(block.lang),
                 )
+                is ChatBlock.Table -> TableBlock(block, color, style)
             }
         }
     }
@@ -65,6 +82,23 @@ fun ChatMarkdown(
 private sealed class ChatBlock {
     data class Plain(val text: String) : ChatBlock()
     data class Code(val lang: String, val code: String) : ChatBlock()
+    data class Table(val header: List<String>, val rows: List<List<String>>) : ChatBlock()
+}
+
+/**
+ * Two-pass split: fenced code first (so `|` characters inside code don't
+ * trick the table detector), then tables, then anything left as plain.
+ */
+private fun splitChatBlocks(text: String): List<ChatBlock> {
+    val out = mutableListOf<ChatBlock>()
+    for (block in splitByFencedCode(text)) {
+        when (block) {
+            is ChatBlock.Code -> out += block
+            is ChatBlock.Plain -> out += extractTables(block.text)
+            is ChatBlock.Table -> out += block  // unreachable in this layer
+        }
+    }
+    return out
 }
 
 private fun splitByFencedCode(text: String): List<ChatBlock> {
@@ -84,6 +118,135 @@ private fun splitByFencedCode(text: String): List<ChatBlock> {
     }
     if (blocks.isEmpty()) blocks += ChatBlock.Plain(text)
     return blocks
+}
+
+/**
+ * Find pipe-tables inside a plain-text block. A table is `header | sep |
+ * body...`: a table-shaped first line, a separator-row second line, and
+ * zero or more table-shaped body lines. Anything that isn't a table is
+ * collected back into Plain blocks so inline parsing still applies.
+ */
+private fun extractTables(plain: String): List<ChatBlock> {
+    val lines = plain.split('\n')
+    val out = mutableListOf<ChatBlock>()
+    val buffer = mutableListOf<String>()
+    fun flushBuffer() {
+        if (buffer.isEmpty()) return
+        val joined = buffer.joinToString("\n").trim('\n')
+        if (joined.isNotEmpty()) out += ChatBlock.Plain(joined)
+        buffer.clear()
+    }
+    var i = 0
+    while (i < lines.size) {
+        val curr = lines[i]
+        val next = lines.getOrNull(i + 1)
+        if (next != null
+            && TABLE_LINE_RE.matches(curr)
+            && TABLE_LINE_RE.matches(next)
+            && isTableSeparator(next)
+        ) {
+            flushBuffer()
+            val header = parseTableRow(curr)
+            i += 2
+            val rows = mutableListOf<List<String>>()
+            while (i < lines.size && TABLE_LINE_RE.matches(lines[i])) {
+                rows += parseTableRow(lines[i])
+                i++
+            }
+            out += ChatBlock.Table(header, rows)
+        } else {
+            buffer += curr
+            i++
+        }
+    }
+    flushBuffer()
+    return out
+}
+
+private fun isTableSeparator(line: String): Boolean {
+    val cells = parseTableRow(line)
+    return cells.isNotEmpty() && cells.all { TABLE_SEPARATOR_CELL_RE.matches(it) }
+}
+
+private fun parseTableRow(line: String): List<String> =
+    line.trim().trim('|').split('|').map { it.trim() }
+
+/**
+ * Each column is its own [Column] so cells auto-align to the widest entry
+ * in that column without manual measurement. Vertical dividers between
+ * columns and a per-column header divider give a recognizable table feel.
+ * The whole row scrolls horizontally as a unit when content exceeds the
+ * surface width.
+ */
+@Composable
+private fun TableBlock(
+    table: ChatBlock.Table,
+    color: Color,
+    style: TextStyle,
+) {
+    if (table.header.isEmpty()) return
+    val scroll = rememberScrollState()
+    val cellStyle = style.copy(fontFamily = CodeFontFamily)
+    val headerStyle = cellStyle.copy(fontWeight = FontWeight.Bold)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+    ) {
+        Row(
+            modifier = Modifier
+                .horizontalScroll(scroll)
+                .padding(8.dp),
+        ) {
+            table.header.forEachIndexed { colIdx, _ ->
+                TableColumn(
+                    headerText = table.header[colIdx],
+                    bodyTexts = table.rows.map { it.getOrNull(colIdx).orEmpty() },
+                    color = color,
+                    headerStyle = headerStyle,
+                    cellStyle = cellStyle,
+                )
+                if (colIdx < table.header.size - 1) {
+                    VerticalDivider(
+                        modifier = Modifier.padding(horizontal = 2.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TableColumn(
+    headerText: String,
+    bodyTexts: List<String>,
+    color: Color,
+    headerStyle: TextStyle,
+    cellStyle: TextStyle,
+) {
+    Column {
+        Text(
+            text = remember(headerText) { parseInline(headerText) },
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+            style = headerStyle,
+            color = color,
+            softWrap = false,
+        )
+        HorizontalDivider(
+            modifier = Modifier.padding(vertical = 2.dp),
+            color = MaterialTheme.colorScheme.outlineVariant,
+        )
+        bodyTexts.forEach { cell ->
+            Text(
+                text = remember(cell) { parseInline(cell) },
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                style = cellStyle,
+                color = color,
+                softWrap = false,
+            )
+        }
+    }
 }
 
 private fun parseInline(text: String): AnnotatedString = buildAnnotatedString {
