@@ -27,9 +27,7 @@ import com.tachibanayu24.ccremote.ui.code.highlight
 import dev.snipme.highlights.model.SyntaxLanguage
 
 private val AddBg = Color(0x3322C55E)   // green tint
-private val AddGutterBg = Color(0x5022C55E)
 private val DelBg = Color(0x33EF4444)   // red tint
-private val DelGutterBg = Color(0x50EF4444)
 private val ContextBg = Color.Transparent
 
 /**
@@ -51,14 +49,15 @@ fun DiffView(
 ) {
     if (lines.isEmpty()) return
     val gutterWidth: Dp = remember(lines) {
-        // ~8sp per digit + 8dp padding. Fixed-width chars in monospace keep
-        // multi-line diffs aligned without measurement gymnastics.
+        // Just enough room for the widest line number, no extra padding —
+        // the row's body padding already separates it from the marker. ~7sp
+        // per digit in our small monospace style.
         val maxDigits = lines
             .maxOf { displayLineNumOf(it) }
             .toString()
             .length
             .coerceAtLeast(2)
-        (maxDigits * 8 + 8).dp
+        (maxDigits * 7).dp
     }
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -80,10 +79,10 @@ private fun DiffRow(
     gutterWidth: Dp,
     scroll: ScrollState,
 ) {
-    val (rowBg, gutterBg, marker) = when (line) {
-        is DiffLine.Add -> Triple(AddBg, AddGutterBg, "+")
-        is DiffLine.Del -> Triple(DelBg, DelGutterBg, "-")
-        is DiffLine.Context -> Triple(ContextBg, ContextBg, " ")
+    val (rowBg, marker) = when (line) {
+        is DiffLine.Add -> AddBg to "+"
+        is DiffLine.Del -> DelBg to "-"
+        is DiffLine.Context -> ContextBg to " "
     }
     Row(
         modifier = Modifier
@@ -92,12 +91,10 @@ private fun DiffRow(
             .height(20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        LineNumber(displayLineNumOf(line), gutterWidth, gutterBg)
+        LineNumber(displayLineNumOf(line), gutterWidth)
         Text(
             text = marker,
-            modifier = Modifier
-                .background(gutterBg)
-                .padding(horizontal = 4.dp),
+            modifier = Modifier.padding(horizontal = 4.dp),
             style = MaterialTheme.typography.bodySmall,
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -132,13 +129,12 @@ private fun displayLineNumOf(line: DiffLine): Int = when (line) {
 }
 
 @Composable
-private fun LineNumber(num: Int, width: Dp, bg: Color) {
+private fun LineNumber(num: Int, width: Dp) {
     Text(
         text = num.toString(),
         modifier = Modifier
             .width(width)
-            .background(bg)
-            .padding(horizontal = 4.dp),
+            .padding(start = 6.dp, end = 4.dp),
         style = MaterialTheme.typography.bodySmall,
         fontFamily = FontFamily.Monospace,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
