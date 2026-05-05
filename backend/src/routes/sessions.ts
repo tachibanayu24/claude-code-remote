@@ -17,8 +17,10 @@ const TURNS_MAX_LIMIT = 50
 // Window during which delivered prompts are still surfaced to the detail
 // screen, so the queued bubble doesn't flicker off in the gap between
 // channel.mjs claim and the heartbeat that picks the prompt up as
-// `current_prompt`.
-const RECENT_DELIVERED_TTL_SEC = 60
+// `current_prompt` (whether via `type:"user"` or `type:"attachment"`
+// queued_command). One heartbeat (3s) + a couple of safety ticks is plenty;
+// any longer and the bubble lingers as a duplicate of the in-flight one.
+const RECENT_DELIVERED_TTL_SEC = 15
 
 app.post('/heartbeat', async (c) => {
   const body = await readJson<SessionHeartbeatRequest>(c.req.raw)

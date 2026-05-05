@@ -81,13 +81,29 @@ const SYNTHETIC_USER_WRAPPERS = [
 const CHANNEL_WRAPPER_RE = /^<channel\b[^>]*>\n?([\s\S]*?)\n?<\/channel>\s*$/
 
 /**
- * Channel-injected prompts (phone → channel.mjs → CC) are written with
- * `isMeta: true` and `origin.kind === 'channel'` because CC treats them as
- * out-of-band notifications. They ARE real user input — strip the
- * `<channel ...>...</channel>` wrapper and surface the inner content.
+ * Channel-injected prompts (phone → channel.mjs → CC) come in two shapes
+ * depending on CC's busy state when the notification arrives:
+ *
+ *   (a) IDLE — CC writes a normal `type:"user"` entry with `origin.kind:
+ *       "channel"` and the channel-wrapper text in `message.content`.
+ *   (b) BUSY — CC stashes it as `type:"attachment"`,
+ *       `attachment.type:"queued_command"`, `attachment.origin.kind:
+ *       "channel"`, and the channel-wrapper text in `attachment.prompt`.
+ *       The attachment is consumed in jsonl-order: by the time it appears,
+ *       CC's about to (or already has) treated it as the next user input.
+ *
+ * Both shapes are real user input. The parsers below normalize over them.
  */
 export function isChannelInjectedPrompt(e) {
   return e.origin?.kind === 'channel'
+}
+
+export function isChannelQueuedCommand(e) {
+  return (
+    e.type === 'attachment' &&
+    e.attachment?.type === 'queued_command' &&
+    e.attachment?.origin?.kind === 'channel'
+  )
 }
 
 export function isSyntheticUserEntry(e) {
@@ -104,17 +120,22 @@ export function isSyntheticUserEntry(e) {
   return SYNTHETIC_USER_WRAPPERS.some((w) => head.startsWith(w))
 }
 
+function unwrapChannel(text) {
+  const m = text.match(CHANNEL_WRAPPER_RE)
+  return m ? m[1].trim() : text.trim()
+}
+
 export function userEntryText(e) {
+  if (isChannelQueuedCommand(e)) {
+    return unwrapChannel(String(e.attachment?.prompt ?? ''))
+  }
   const c = e.message?.content
   const raw = typeof c === 'string'
     ? c
     : Array.isArray(c)
       ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('\n')
       : ''
-  if (isChannelInjectedPrompt(e)) {
-    const m = raw.match(CHANNEL_WRAPPER_RE)
-    if (m) return m[1].trim()
-  }
+  if (isChannelInjectedPrompt(e)) return unwrapChannel(raw)
   return raw.trim()
 }
 
@@ -122,23 +143,51 @@ export function userEntryText(e) {
  * Most recent external user prompt — what the human typed at the prompt
  * (terminal or phone). Skips tool_result injections, compact-summary
  * re-injections, slash-command echoes, bash-mode IO, and other synthetic
- * `user` entries CC writes for its own bookkeeping. Channel-injected
- * prompts are kept and unwrapped. Returns `{ text, ms, lineIndex }` or
- * null if none. ms is the parsed timestamp (or null), lineIndex lets
- * callers walk forward.
+ * `user` entries CC writes for its own bookkeeping. Both channel-injected
+ * shapes (idle → `type:"user"`, busy → `type:"attachment"` queued_command)
+ * are kept and unwrapped. Returns `{ text, ms, lineIndex }` or null if
+ * none. ms is the parsed timestamp (or null), lineIndex lets callers walk
+ * forward.
  */
 export function lastUserPromptFromJsonl(jsonl) {
   if (!jsonl) return null
   const lines = jsonl.split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]
-    if (!line.includes('"type":"user"')) continue
+    // Cheap pre-filter — full JSON parse only on candidate lines.
+    const looksUser = line.includes('"type":"user"')
+    const looksQueuedAttachment = line.includes('"type":"attachment"') &&
+      line.includes('"queued_command"') &&
+      line.includes('"channel"')
+    if (!looksUser && !looksQueuedAttachment) continue
     try {
       const e = JSON.parse(line)
-      if (e.type !== 'user') continue
-      if (isSyntheticUserEntry(e)) continue
-      const ms = e.timestamp ? Date.parse(e.timestamp) : null
-      return { text: userEntryText(e), ms, lineIndex: i }
+      if (e.type === 'user') {
+        if (isSyntheticUserEntry(e)) continue
+        const ms = e.timestamp ? Date.parse(e.timestamp) : null
+        return { text: userEntryText(e), ms, lineIndex: i }
+      }
+      if (isChannelQueuedCommand(e)) {
+        // For attachment timestamps, prefer the consumption time over the
+        // enqueue time. Heuristic: walk forward to the first assistant
+        // entry — its timestamp is when CC actually started responding.
+        // Falls back to the attachment timestamp if no assistant follows
+        // yet (in-flight from a phone perspective).
+        const ms = consumeMsFromJsonl(lines, i) ??
+          (e.timestamp ? Date.parse(e.timestamp) : null)
+        return { text: userEntryText(e), ms, lineIndex: i }
+      }
+    } catch (_) {}
+  }
+  return null
+}
+
+function consumeMsFromJsonl(lines, fromLineIndex) {
+  for (let i = fromLineIndex + 1; i < lines.length; i++) {
+    if (!lines[i].includes('"type":"assistant"')) continue
+    try {
+      const e = JSON.parse(lines[i])
+      if (e.type === 'assistant' && e.timestamp) return Date.parse(e.timestamp)
     } catch (_) {}
   }
   return null
