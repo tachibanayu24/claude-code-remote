@@ -17,6 +17,7 @@
 - PC 側: hooks (Stop / PostToolUse) と MCP channel server (`channel/channel.mjs`)。channel が permission relay + heartbeat (3s) + queued prompt drain を担う
 - 承認は **Claude Code Channels の permission relay**、追加 prompt は **Channels inbound `notifications/claude/channel`** を採用（PreToolUse ポーリング案は廃止）
 - 全層リファクタ済み（2026-05-05）: backend を route 単位に分割 + `dismissPendingApprovals` を `RETURNING` でアトミック化 + cleanup を `waitUntil`、jsonl パーサーを `hooks/lib/` に集約、Android は `BackendClientHolder` でクライアントを singleton 化 + `UiState` に集約 + `Screen` sealed class でナビ管理 + `FLAG_SECURE` / DataStore backup 除外 / R8 minify。詳細はセッションログ参照
+- phone prompt の queued_command attachment 対応（2026-05-05）: CC が busy 中に届く phone prompt は jsonl に `type:"user"` ではなく `type:"attachment"` `attachment.type:"queued_command"` (`origin.kind:"channel"`) として書かれる。jsonl パーサが両形態を扱うように修正、Stop hook の user_prompt 取りこぼし + heartbeat の current_prompt 抜けを解消
 - 設計の経緯は [`sessions/2026-05-04_実装方針確定.md`](./sessions/2026-05-04_実装方針確定.md) と [`sessions/2026-05-05_channels方針確定.md`](./sessions/2026-05-05_channels方針確定.md)、リファクタ詳細は [`sessions/2026-05-05_全層リファクタ.md`](./sessions/2026-05-05_全層リファクタ.md)
 
 ## 3. アーキテクチャ
@@ -53,7 +54,7 @@
   2. **Heartbeat (3s 周期)**: jsonl から sessionId / ai-title / mtime / 進行中 user prompt / 進行中 assistant text を抽出し `/v1/sessions/heartbeat` に POST。subprocess の存在自体が "session alive" のシグナル（CC 終了 → このプロセスも終了 → backend が closed と判定）
   3. **Prompt drain (2s 周期)**: スマホアプリが POST した `prompts.queued` を `/v1/sessions/:cwd/prompts/queued` で取り、`/v1/prompts/:id/delivered` で claim してから `notifications/claude/channel` で CC に inject。claim-then-emit で同 cwd に複数 CC があっても二重配信しない
 - 「常に許可」レスポンスを受けたら `<cwd>/.claude/settings.local.json` に tool パターンを atomic に追記
-- jsonl の synthetic user エントリ（compact summary、`<command-name>`、`<bash-input>`、`<system-reminder>` 等）はフィルタ。channel 経由 inject (`origin.kind: 'channel'`) は `<channel ...>...</channel>` を剥がして実 prompt として扱う
+- jsonl の synthetic user エントリ（compact summary、`<command-name>`、`<bash-input>`、`<system-reminder>` 等）はフィルタ。channel 経由 inject は (a) CC が idle 時 = `type:"user"` (`origin.kind:"channel"`) / (b) busy 時 = `type:"attachment"` (`attachment.type:"queued_command"`, `attachment.origin.kind:"channel"`) の 2 形態で書かれるので両方を扱い、`<channel ...>...</channel>` を剥がして実 prompt として扱う
 - 起動エイリアス: `claude --dangerously-load-development-channels server:cc-remote`
 
 **PC hook script (`hooks/cc-remote-hook.mjs`)**
@@ -66,7 +67,7 @@
 - D1 で承認 / セッション / ターン履歴 / queued prompt を管理、FCM v1 (Web Crypto RS256 JWT) で push 配送、`UNREGISTERED` トークンは自動 prune
 - Stop の閾値判定 (`STOP_THRESHOLD_MS`) も backend で。短いターンは push スキップ
 - セッション state (`working / idle / awaiting_approval / closed`) は heartbeat age + jsonl mtime + pending approval 数から導出
-- Stop hook 受信時に `current_prompt` / `current_assistant_text` を NULL 化、対応する queued prompt 行は `delivered_at` の grace 60s 経過 + Android 側の text 一致 dedup で消える
+- Stop hook 受信時に `current_prompt` / `current_assistant_text` を NULL 化、対応する queued prompt 行は `delivered_at` の grace 15s 経過 + Android 側の text 一致 dedup で消える
 - Workers は stateless、D1 が source of truth
 
 **D1 (SQLite at edge)**
