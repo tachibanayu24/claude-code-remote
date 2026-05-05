@@ -92,5 +92,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.play.services)
 
+    implementation(libs.highlights)
+
     debugImplementation(libs.androidx.ui.tooling)
 }

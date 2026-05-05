@@ -11,6 +11,7 @@ ktor = "3.0.2"
 kotlinxSerialization = "1.7.3"
 datastore = "1.1.1"
 coroutines = "1.9.0"
+highlights = "1.0.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -37,6 +38,11 @@ ktor-serialization-kotlinx-json = { group = "io.ktor", name = "ktor-serializatio
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "coroutines" }
+
+# Compose-friendly syntax highlighter; produces ColorHighlight/BoldHighlight
+# spans we map onto AnnotatedString. 17 languages out of the box (kt/ts/js/
+# py/sh/rs/...). Unsupported types fall back to plain text.
+highlights = { group = "dev.snipme", name = "highlights", version.ref = "highlights" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

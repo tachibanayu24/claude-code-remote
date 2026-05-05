@@ -59,6 +59,7 @@ data class Turn(
     val user_prompt: String? = null,
     val assistant_text: String? = null,
     val tool_summary: List<ToolUsage> = emptyList(),
+    val tool_calls: List<ToolCall> = emptyList(),
     val elapsed_ms: Long? = null,
     val ended_at: Long,
 )
