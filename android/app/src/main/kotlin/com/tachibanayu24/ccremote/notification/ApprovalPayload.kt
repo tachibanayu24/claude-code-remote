@@ -11,7 +11,6 @@ import com.tachibanayu24.ccremote.data.ApprovalCommandFormatter
 data class ApprovalPayload(
     val requestId: String,
     val sessionId: String,
-    val cwd: String,
     val project: String,
     val sessionLabel: String,
     val toolName: String,
@@ -49,7 +48,6 @@ data class ApprovalPayload(
             return ApprovalPayload(
                 requestId = requestId,
                 sessionId = data["session_id"].orEmpty(),
-                cwd = data["cwd"].orEmpty(),
                 project = data["project"].orEmpty(),
                 sessionLabel = data["session_label"].orEmpty(),
                 toolName = data["tool_name"].orEmpty(),

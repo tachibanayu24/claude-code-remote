@@ -40,7 +40,6 @@ app.post('/', async (c) => {
   const notified = await notifyApprovalRequest(c.env, c.env.DB, {
     request_id: id,
     session_id: body.session_id,
-    cwd: body.cwd ?? '',
     project: body.project_name,
     session_label: body.session_label ?? '',
     tool_name: body.tool_name,
