@@ -99,7 +99,6 @@ fun HomeScreen(
                             SessionRow(it, onClick = { onSelectSession(it.session_id) })
                         }
                     }
-                    item { LegendRow() }
                 }
             }
         }
@@ -146,10 +145,7 @@ private fun SectionLabel(label: String, topPadding: Dp = 0.dp) {
 private fun SessionRow(session: Session, onClick: () -> Unit) {
     val titleLine = remember(session) { titleLineFor(session) }
     val talkBackLabel = remember(session, titleLine) {
-        buildString {
-            append(stateLabel(session))
-            append(", ").append(titleLine)
-        }
+        "${stateLabel(session)}, $titleLine"
     }
     Card(
         modifier = Modifier
@@ -180,7 +176,9 @@ private fun SessionRow(session: Session, onClick: () -> Unit) {
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
-                val subtitle = subtitleFor(session)
+                // ai_title is already encoded in titleLine; subtitle just
+                // shows the live state so we don't repeat it.
+                val subtitle = stateLabel(session)
                 if (subtitle.isNotBlank()) {
                     Text(
                         text = subtitle,
@@ -224,46 +222,6 @@ private fun StateDot(state: String) {
             .size(10.dp)
             .background(color = color, shape = CircleShape),
     )
-}
-
-@Composable
-private fun LegendRow() {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 16.dp, bottom = 8.dp, start = 12.dp, end = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        LegendItem(WorkingColor, "working")
-        LegendItem(AwaitingColor, "awaiting")
-        LegendItem(IdleColor, "idle")
-        LegendItem(ClosedColor, "closed")
-    }
-}
-
-@Composable
-private fun LegendItem(color: Color, label: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .background(color, CircleShape),
-        )
-        Spacer(Modifier.size(4.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontFamily = FontFamily.Monospace,
-        )
-    }
-}
-
-private fun subtitleFor(session: Session): String {
-    val label = stateLabel(session)
-    val title = session.ai_title?.takeIf { it.isNotBlank() }
-    return if (title != null) "$label · $title" else label
 }
 
 private fun stateLabel(session: Session): String = when (session.state) {

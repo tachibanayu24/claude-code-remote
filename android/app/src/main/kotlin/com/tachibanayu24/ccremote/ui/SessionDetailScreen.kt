@@ -140,6 +140,17 @@ fun SessionDetailScreen(
         }
 
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            // Faded Clawd backdrop — a quiet CC accent that animates on its
+            // own. Sits behind the chat content; pixelSize/alpha tuned so the
+            // mascot reads as decoration rather than something to interact
+            // with. interactive=false to let touches reach the LazyColumn.
+            ClawdLogo(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .alpha(0.08f),
+                pixelSize = 10.dp,
+                interactive = false,
+            )
             when {
                 detail == null -> Box(
                     modifier = Modifier.fillMaxSize(),
