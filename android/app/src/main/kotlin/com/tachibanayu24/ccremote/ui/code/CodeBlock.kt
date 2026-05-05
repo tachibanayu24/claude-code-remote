@@ -15,9 +15,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.tachibanayu24.ccremote.ui.theme.CodeFontFamily
 import dev.snipme.highlights.Highlights
 import dev.snipme.highlights.model.BoldHighlight
 import dev.snipme.highlights.model.ColorHighlight
@@ -51,7 +51,7 @@ fun CodeBlock(
             modifier = Modifier
                 .horizontalScroll(scroll)
                 .padding(horizontal = 12.dp, vertical = 10.dp),
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             style = MaterialTheme.typography.bodySmall,
             softWrap = false,
             color = MaterialTheme.colorScheme.onSurface,

@@ -19,7 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
+import com.tachibanayu24.ccremote.ui.theme.CodeFontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -96,7 +96,7 @@ private fun DiffRow(
             text = marker,
             modifier = Modifier.padding(horizontal = 4.dp),
             style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         // weight(1f) gives the code column the *remaining* row width — without
@@ -109,7 +109,7 @@ private fun DiffRow(
                 .weight(1f)
                 .horizontalScroll(scroll)
                 .padding(horizontal = 6.dp),
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             style = MaterialTheme.typography.bodySmall,
             softWrap = false,
             color = MaterialTheme.colorScheme.onSurface,
@@ -136,7 +136,7 @@ private fun LineNumber(num: Int, width: Dp) {
             .width(width)
             .padding(start = 6.dp, end = 4.dp),
         style = MaterialTheme.typography.bodySmall,
-        fontFamily = FontFamily.Monospace,
+        fontFamily = CodeFontFamily,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         textAlign = TextAlign.End,
         softWrap = false,

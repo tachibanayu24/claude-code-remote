@@ -13,12 +13,12 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.tachibanayu24.ccremote.ui.code.CodeBlock
 import com.tachibanayu24.ccremote.ui.code.resolveLanguage
+import com.tachibanayu24.ccremote.ui.theme.CodeFontFamily
 
 // Tailwind cyan-300; reads well on the dark Material 3 surface.
 private val InlineCodeColor = Color(0xFF67E8F9)
@@ -50,7 +50,7 @@ fun ChatMarkdown(
             when (block) {
                 is ChatBlock.Plain -> Text(
                     text = remember(block.text) { parseInline(block.text) },
-                    style = style.copy(fontFamily = FontFamily.Monospace),
+                    style = style.copy(fontFamily = CodeFontFamily),
                     color = color,
                 )
                 is ChatBlock.Code -> CodeBlock(
