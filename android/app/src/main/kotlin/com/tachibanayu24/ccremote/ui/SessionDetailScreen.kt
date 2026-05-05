@@ -9,10 +9,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
-import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -71,11 +69,11 @@ fun SessionDetailScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            // System bars (status + nav) plus IME, taking the larger inset on
-            // each side so the keyboard never double-counts with nav bar.
-            // Explicit pattern is more predictable than safeDrawingPadding
-            // when combined with enableEdgeToEdge.
-            .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)),
+            // Pad for status/nav bars only. Don't pad for IME — let the
+            // system's default pan behaviour shift the whole window up
+            // when the keyboard opens, which keeps the latest chat items
+            // visible above the keyboard without us recomputing layout.
+            .windowInsetsPadding(WindowInsets.systemBars),
     ) {
         TopBar(
             projectName = detail?.session?.project_name ?: fallbackProjectName,
@@ -93,22 +91,34 @@ fun SessionDetailScreen(
         // Backend also returns recently-delivered prompts so the queued bubble
         // doesn't flicker off during the gap between channel.mjs ack and the
         // heartbeat that picks the prompt up as current_prompt. Drop any
-        // queued whose text already matches current_prompt — that one has
-        // morphed into the in-flight bubble.
-        val queuedPrompts = (detail?.queued_prompts.orEmpty()).filter { it.text != currentPrompt }
+        // whose text already matches current_prompt (morphed into in-flight)
+        // OR any committed turn's user_prompt (the turn finished — the bubble
+        // would otherwise linger as a duplicate of the just-rendered turn).
+        val committedPromptTexts = turns.mapNotNull {
+            it.user_prompt?.takeIf { p -> p.isNotBlank() }
+        }.toSet()
+        val queuedPrompts = (detail?.queued_prompts.orEmpty()).filter {
+            it.text != currentPrompt && it.text !in committedPromptTexts
+        }
 
         val listState = rememberLazyListState()
-        // Scroll to bottom whenever the visible content meaningfully changes —
-        // covers initial load, new committed turns, in-flight prompt arriving,
-        // partial assistant text growing, queued prompt enqueued, and pending
-        // approvals appearing.
+        // Scroll to *bottom* whenever the visible content meaningfully
+        // changes. animateScrollToItem(index) aligns the item top to the
+        // viewport top, which leaves the last item floating with empty
+        // space below — what we want is the last item's bottom flush with
+        // the viewport bottom. scrollOffset=Int.MAX_VALUE asks for an
+        // impossibly far-down position, which Compose clamps to the
+        // maximum valid scroll → exactly "bottom of the last item at the
+        // bottom of the viewport".
         val lastIndex = turns.size +
             (if (hasInFlight) 1 else 0) +
             queuedPrompts.size +
             pendingApprovals.size - 1
         val assistantLen = currentAssistantText?.length ?: 0
         LaunchedEffect(lastIndex, assistantLen) {
-            if (lastIndex >= 0) listState.animateScrollToItem(lastIndex)
+            if (lastIndex >= 0) {
+                listState.scrollToItem(lastIndex, scrollOffset = Int.MAX_VALUE)
+            }
         }
 
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {

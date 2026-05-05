@@ -513,7 +513,9 @@ async function drainPrompts() {
         method: 'notifications/claude/channel',
         params: { content: p.text, meta: { source: 'phone', prompt_id: p.id } },
       })
-      log(`injected prompt ${p.id}`)
+      // Echo the full prompt text on stderr so the CLI surfaces the entire
+      // content (CC's own channel-banner display truncates long prompts).
+      log(`injected prompt ${p.id}:\n${p.text}`)
     } catch (e) {
       // We've already acked: the prompt is lost rather than duplicated. Log
       // loudly so the user can retry from the app.

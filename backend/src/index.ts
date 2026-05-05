@@ -346,7 +346,7 @@ app.get('/v1/sessions', async (c) => {
   return c.json({ sessions })
 })
 
-const TURNS_DEFAULT_LIMIT = 5
+const TURNS_DEFAULT_LIMIT = 20
 const TURNS_RETENTION_SEC = 30 * 24 * 3600
 
 app.get('/v1/sessions/:cwd/turns', async (c) => {

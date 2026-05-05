@@ -11,11 +11,11 @@
 
 ## 2. 現状 (2026-05-05)
 
-- MVP 完了。承認 / 完了通知ともスマホで受け取り→操作までエンドツーエンドで動く
+- MVP に加え **双方向操作** まで完了。承認 / 完了通知の受信、inline 承認、スマホからの prompt 送信、in-flight assistant text の live 表示、通知 tap で詳細画面遷移までエンドツーエンドで動く
 - バックエンド: Cloudflare Workers + Hono + D1 + FCM v1 にデプロイ済み (`claude-code-remote.<subdomain>.workers.dev`)
-- Android アプリ: Kotlin + Compose + Material 3、FCM data push 受信 + Approve / Always-allow / Deny + 完了通知 popup
-- PC 側: hooks (Stop / PostToolUse) と MCP channel server (`channel/channel.mjs`) で permission relay
-- 承認は **Claude Code Channels の permission relay** を採用（旧 PreToolUse ポーリング案は廃止）
+- Android アプリ: Kotlin + Compose + Material 3。ホーム = セッション一覧（state dot）、タップで詳細画面（チャットストリーム + inline 承認 + prompt 入力バー）。popup ダイアログは廃止
+- PC 側: hooks (Stop / PostToolUse) と MCP channel server (`channel/channel.mjs`)。channel が permission relay + heartbeat (3s) + queued prompt drain を担う
+- 承認は **Claude Code Channels の permission relay**、追加 prompt は **Channels inbound `notifications/claude/channel`** を採用（PreToolUse ポーリング案は廃止）
 - 設計の経緯は [`sessions/2026-05-04_実装方針確定.md`](./sessions/2026-05-04_実装方針確定.md) と [`sessions/2026-05-05_channels方針確定.md`](./sessions/2026-05-05_channels方針確定.md)
 
 ## 3. アーキテクチャ
@@ -47,8 +47,12 @@
 ### 各コンポーネントの責務
 
 **MCP channel server (`channel/channel.mjs`)**
-- Claude Code が stdio で起動する subprocess。Channels の `permission_request` を受け取り backend に POST、approval id でポーリングし `permission` notification を返す
+- Claude Code が stdio で起動する subprocess。3 役割:
+  1. **Permission relay**: Channels の `permission_request` を受け取り backend に POST、approval id でポーリングし `permission` notification を返す
+  2. **Heartbeat (3s 周期)**: jsonl から sessionId / ai-title / mtime / 進行中 user prompt / 進行中 assistant text を抽出し `/v1/sessions/heartbeat` に POST。subprocess の存在自体が "session alive" のシグナル（CC 終了 → このプロセスも終了 → backend が closed と判定）
+  3. **Prompt drain (2s 周期)**: スマホアプリが POST した `prompts.queued` を `/v1/sessions/:cwd/prompts/queued` で取り、`/v1/prompts/:id/delivered` で claim してから `notifications/claude/channel` で CC に inject。claim-then-emit で同 cwd に複数 CC があっても二重配信しない
 - 「常に許可」レスポンスを受けたら `<cwd>/.claude/settings.local.json` に tool パターンを atomic に追記
+- jsonl の synthetic user エントリ（compact summary、`<command-name>`、`<bash-input>`、`<system-reminder>` 等）はフィルタ。channel 経由 inject (`origin.kind: 'channel'`) は `<channel ...>...</channel>` を剥がして実 prompt として扱う
 - 起動エイリアス: `claude --dangerously-load-development-channels server:cc-remote`
 
 **PC hook script (`hooks/cc-remote-hook.mjs`)**
@@ -57,19 +61,23 @@
 - 配置: `~/.claude/hooks/cc-remote-hook.mjs`（symlink でリポジトリを参照）、登録は `~/.claude/settings.json`
 
 **Workers backend (Hono)**
-- 単一 Worker。`/v1/devices/register`, `/v1/approvals*`, `/v1/hook/{stop,posttool}`
-- D1 で承認状態を管理、FCM v1 (Web Crypto RS256 JWT) で push 配送、`UNREGISTERED` トークンは自動 prune
+- 単一 Worker。`/v1/devices/register`, `/v1/approvals*`, `/v1/hook/{stop,posttool}`, `/v1/sessions*`, `/v1/sessions/:cwd/turns`, `/v1/sessions/:cwd/prompts*`, `/v1/prompts/:id/delivered`
+- D1 で承認 / セッション / ターン履歴 / queued prompt を管理、FCM v1 (Web Crypto RS256 JWT) で push 配送、`UNREGISTERED` トークンは自動 prune
 - Stop の閾値判定 (`STOP_THRESHOLD_MS`) も backend で。短いターンは push スキップ
+- セッション state (`working / idle / awaiting_approval / closed`) は heartbeat age + jsonl mtime + pending approval 数から導出
+- Stop hook 受信時に `current_prompt` / `current_assistant_text` を NULL 化、対応する queued prompt 行は `delivered_at` の grace 60s 経過 + Android 側の text 一致 dedup で消える
 - Workers は stateless、D1 が source of truth
 
 **D1 (SQLite at edge)**
-- `devices`, `approvals`, `notifications` テーブル
+- `devices`, `approvals`, `notifications`, `sessions`, `turns`, `prompts` テーブル
 - Sequential Consistency（"read your own writes"）
 
 **Android アプリ (Kotlin + Compose + Material 3)**
-- FCM data push を受けてローカル通知を組み立て、Approve / Always allow / Deny / 完了通知 popup を表示
-- アクション → BroadcastReceiver → backend POST、アプリ起動なしで完結
-- 履歴・セッション一覧画面（Phase 2）
+- FCM data push 受信 → ローカル通知。承認通知の Allow / Always / Deny アクションは BroadcastReceiver → backend POST でアプリ起動不要
+- ホーム画面 = セッション一覧（state dot で working/awaiting/idle/closed を可視化）。30s 周期の background poll + 画面表示時 / pull-to-refresh
+- 詳細画面 = チャットストリーム（committed turn → in-flight bubble → queued bubble → pending approval inline カード → 入力バー）。3s 周期の detail poll で in-flight assistant text が live に更新される
+- 通知タップは `ACTION_OPEN_SESSION + EXTRA_CWD` で該当 cwd の詳細画面に直接遷移（旧 popup ダイアログは廃止）
+- `windowSoftInputMode` は default (pan)、Compose 側で `windowInsetsPadding(systemBars)` のみ。IME 出現時は system pan で window 全体が持ち上がるので最新チャットが隠れない
 
 ## 4. 承認フロー（Channels permission relay）
 
@@ -148,42 +156,16 @@ PostToolUse hook も `/v1/hook/posttool` にだけ POST してその cwd の pen
 
 ## 6. データモデル (D1)
 
-```sql
-CREATE TABLE devices (
-  id           TEXT PRIMARY KEY,         -- アプリ生成 UUID
-  fcm_token    TEXT NOT NULL,
-  name         TEXT,                     -- "Pixel 9" 等
-  registered_at INTEGER NOT NULL         -- epoch sec
-);
+migration は `backend/migrations/` に番号付きで配置（`0001_initial.sql` から `0006_current_assistant_text.sql`）。スキーマの正は migration ファイル群、以下は要約:
 
-CREATE TABLE approvals (
-  id            TEXT PRIMARY KEY,        -- request UUID
-  session_id    TEXT NOT NULL,           -- Claude Code session_id
-  cwd           TEXT NOT NULL,
-  project_name  TEXT NOT NULL,           -- basename(cwd)
-  tool_name     TEXT NOT NULL,
-  tool_input    TEXT NOT NULL,           -- JSON 文字列
-  status        TEXT NOT NULL CHECK(status IN ('pending','allow','deny','ask','expired')),
-  reason        TEXT,
-  created_at    INTEGER NOT NULL,
-  resolved_at   INTEGER,
-  resolved_by   TEXT                     -- devices.id
-);
-CREATE INDEX idx_approvals_status ON approvals(status, created_at);
+- **devices** — `id` (UUID), `fcm_token`, `name`, `registered_at`
+- **approvals** — `id`, `session_id`, `cwd`, `project_name`, `tool_name`, `tool_input` (JSON), `status` ∈ `pending/allow/deny/expired`, `add_to_allowlist`, `created_at`, `resolved_at`, `resolved_by`
+- **notifications** — completed push の履歴 (`kind='completed'` 等)
+- **sessions** — `cwd` (PK), `session_id`, `project_name`, `ai_title`, `jsonl_mtime`, `last_heartbeat`, `current_prompt`, `current_assistant_text`。channel.mjs heartbeat で upsert、Stop hook で in-flight 列をクリア
+- **turns** — `id`, `cwd`, `session_id`, `user_prompt`, `assistant_text`, `tool_summary` (JSON), `elapsed_ms`, `ended_at`。Stop hook 時に commit、`(cwd, ended_at DESC)` index、30 日 retention
+- **prompts** — `id`, `cwd`, `text`, `status` ∈ `queued/delivered`, `created_at`, `delivered_at`。スマホ → backend → channel.mjs drain → CC inject の queue
 
-CREATE TABLE notifications (
-  id            TEXT PRIMARY KEY,
-  session_id    TEXT NOT NULL,
-  cwd           TEXT NOT NULL,
-  project_name  TEXT NOT NULL,
-  kind          TEXT NOT NULL,           -- 'completed' | 'waiting' | 'milestone'
-  title         TEXT NOT NULL,
-  body          TEXT,
-  created_at    INTEGER NOT NULL
-);
-```
-
-古い行は cleanup-on-write（INSERT 時に N 日以上前を DELETE）で対処、cron 不要。
+古い行は cleanup-on-write（INSERT/READ 時に N 日以上前を DELETE）で対処、cron 不要。
 
 ## 7. 認証・秘匿情報（public repo 前提）
 
@@ -262,13 +244,24 @@ PreToolUse は廃止（Channels permission relay が肩代わり）。Stop と P
 - [x] Android 実機 E2E（permission relay + 完了通知 popup）
 - [x] 全層コードレビュー pass + bug/security fix 一巡（timing-safe auth, allowBackup=false, dialog 必須応答, etc.）
 
-### Phase 2: 履歴・ダッシュボード
-- [ ] Android アプリのメイン画面（履歴、フィルタ、セッション別表示）
-- [ ] Agent SDK の `list_sessions()` 連携検討（PC 側）
+### Phase 2: 履歴・ダッシュボード ✅ 完了
+- [x] Android ホーム = セッション一覧（state dot、awaiting/working/idle/closed）
+- [x] セッション詳細画面（チャットストリーム、markdown、ターン履歴 limit=20）
+- [x] channel.mjs heartbeat (3s) によるセッション state 派生（new hook 不要）
 
-### Phase 3+: future work
+### Phase 3: 双方向操作 ✅ 完了
+- [x] スマホ → CC への prompt 送信 (`prompts` テーブル + channel.mjs drain + `notifications/claude/channel`)
+- [x] in-flight assistant text の live 表示（jsonl から partial chunk 抽出 → heartbeat → backend → 詳細画面）
+- [x] queued bubble（送信即時表示、in-flight に morph、commit 後 dedup で消える）
+- [x] 通知タップで詳細画面に直接遷移（popup ダイアログ廃止）
+- [x] 詳細画面の inline 承認カード（Allow / Always / Deny）+ コマンド本文表示
+- [x] CC が user 扱いで書く synthetic エントリ（compact summary、slash command echo、bash IO 等）のフィルタ
+- [x] IME 出現時は system pan に任せ最新チャットが隠れないレイアウト
+
+### Phase 4+: future work
 - 詳細は [`widget-plan.md`](./widget-plan.md)
-- Channels の `additional_prompts` 仕様確定後に「phone から PC の CC に追加プロンプト送信」を検討
+- 複数 CC を同 cwd で並行運用するときの session_id ベース絞り込み（現状 cwd だけだと turns / prompts が混ざる）
+- ホームウィジェット / Wear OS / Fitbit ミラー強化
 
 ## 10. UI / ブランディング方針
 

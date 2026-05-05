@@ -61,7 +61,7 @@ class BackendClient(private val config: Config) {
         if (!res.status.isSuccess()) emptyList() else res.body<SessionsResponse>().sessions
     }.getOrDefault(emptyList())
 
-    suspend fun sessionDetail(cwd: String, limit: Int = 5): SessionDetailResponse? = runCatching {
+    suspend fun sessionDetail(cwd: String, limit: Int = 20): SessionDetailResponse? = runCatching {
         val res: HttpResponse = http.get("${config.backendUrl}/v1/sessions/${encodeCwd(cwd)}/turns?limit=$limit")
         if (!res.status.isSuccess()) null else res.body<SessionDetailResponse>()
     }.getOrNull()
