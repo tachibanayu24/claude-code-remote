@@ -12,6 +12,7 @@ import com.tachibanayu24.ccremote.data.BackendClient
 import com.tachibanayu24.ccremote.data.Config
 import com.tachibanayu24.ccremote.data.ConfigStore
 import com.tachibanayu24.ccremote.notification.ApprovalPayload
+import com.tachibanayu24.ccremote.notification.CompletionPayload
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -38,6 +39,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun showApproval(payload: ApprovalPayload) { _approval.value = payload }
     fun dismissApproval() { _approval.value = null }
+
+    private val _completion = MutableStateFlow<CompletionPayload?>(null)
+    val completion: StateFlow<CompletionPayload?> = _completion
+
+    fun showCompletion(payload: CompletionPayload) { _completion.value = payload }
+    fun dismissCompletion() { _completion.value = null }
 
     init {
         viewModelScope.launch {

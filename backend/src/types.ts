@@ -36,9 +36,9 @@ export interface NotificationCreateRequest {
   cwd: string
   project_name: string
   session_label?: string
-  kind: string
-  title: string
-  body?: string
+  kind: 'completed' | string
+  elapsed_ms?: number | null
+  full_message?: string
 }
 
 export interface ApprovalRow {

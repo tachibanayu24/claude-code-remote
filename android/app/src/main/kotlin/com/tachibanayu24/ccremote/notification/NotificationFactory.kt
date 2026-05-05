@@ -52,15 +52,34 @@ object NotificationFactory {
         val kind = data["kind"] ?: "info"
         val project = data["project"].orEmpty()
         val sessionLabel = data["session_label"].orEmpty()
+        val fullMessage = data["full_message"].orEmpty()
+        val elapsedMs = data["elapsed_ms"]?.toLongOrNull() ?: 0L
         val subText = if (sessionLabel.isNotBlank() && project.isNotBlank()) project else null
         val notificationId = ("info-" + System.currentTimeMillis()).hashCode()
 
-        val tap = PendingIntent.getActivity(
-            context,
-            notificationId,
-            Intent(context, MainActivity::class.java),
-            PENDING_FLAGS,
-        )
+        val tap = if (kind == "completed" && fullMessage.isNotBlank()) {
+            val payload = CompletionPayload(
+                notificationId = notificationId,
+                titleHead = sessionLabel.ifBlank { project },
+                project = project,
+                sessionLabel = sessionLabel,
+                elapsedMs = elapsedMs,
+                fullMessage = fullMessage,
+            )
+            val intent = Intent(context, MainActivity::class.java).apply {
+                action = MainActivity.ACTION_VIEW_COMPLETION
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                payload.writeToIntent(this)
+            }
+            PendingIntent.getActivity(context, notificationId, intent, PENDING_FLAGS)
+        } else {
+            PendingIntent.getActivity(
+                context,
+                notificationId,
+                Intent(context, MainActivity::class.java),
+                PENDING_FLAGS,
+            )
+        }
 
         val builder = NotificationCompat.Builder(context, CHANNEL_INFO)
             .setSmallIcon(R.drawable.ic_clawd)

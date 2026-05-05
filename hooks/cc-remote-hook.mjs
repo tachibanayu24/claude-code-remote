@@ -1,15 +1,14 @@
 #!/usr/bin/env node
-// claude-code-remote: Claude Code Stop / Notification / PostToolUse hook.
-// Sends one-shot pushes to phone when Claude finishes a turn (stop) or when
-// CC waits for user input (notify, e.g. idle_prompt). Permission approvals
-// are NOT handled here — they go through the MCP channel server (see
-// channel/channel.mjs and Channels permission relay). PostToolUse fires after
-// each tool execution to clean up any pending phone notifications when the
-// user answered locally in the CLI.
+// claude-code-remote: Claude Code Stop / PostToolUse hook.
+// Sends a one-shot push to phone when Claude finishes a turn that exceeded
+// the threshold. Permission approvals are NOT handled here — they go through
+// the MCP channel server (see channel/channel.mjs and Channels permission
+// relay). PostToolUse fires after each tool execution to clean up any pending
+// phone notifications when the user answered locally in the CLI.
 //
-// Modes: stop | notify | posttool
+// Modes: stop | posttool
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 
@@ -74,20 +73,51 @@ function makeClient(env) {
 
 const encodeCwd = (cwd) => cwd.replace(/[\/.]/g, '-')
 
+/**
+ * Read CC's per-session jsonl. Tries the direct path under
+ * `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` first; falls back to scanning
+ * all project dirs for a matching `<sid>.jsonl`. The fallback covers the case
+ * where the hook's `input.cwd` is a subdirectory (because the user/agent ran
+ * `cd` inside Bash) and no longer matches the project root that CC encoded.
+ */
 function readSessionJsonl(cwd, sessionId) {
-  if (!cwd || !sessionId) return null
-  try {
-    return readFileSync(
-      join(CLAUDE_HOME, 'projects', encodeCwd(cwd), `${sessionId}.jsonl`),
-      'utf8'
-    )
-  } catch (_) {
-    return null
+  if (!sessionId) return null
+  if (cwd) {
+    try {
+      return readFileSync(
+        join(CLAUDE_HOME, 'projects', encodeCwd(cwd), `${sessionId}.jsonl`),
+        'utf8'
+      )
+    } catch (_) {}
   }
+  const projectsDir = join(CLAUDE_HOME, 'projects')
+  let dirs
+  try { dirs = readdirSync(projectsDir) } catch (_) { return null }
+  for (const dir of dirs) {
+    try {
+      return readFileSync(join(projectsDir, dir, `${sessionId}.jsonl`), 'utf8')
+    } catch (_) {}
+  }
+  return null
 }
 
-function getAiTitle(cwd, sessionId) {
-  const jsonl = readSessionJsonl(cwd, sessionId)
+/**
+ * Read the canonical session cwd from the first jsonl entry that has it
+ * (falling back to whatever the hook reported if the jsonl can't be parsed).
+ */
+function canonicalCwdFromJsonl(jsonl, fallback) {
+  if (!jsonl) return fallback
+  for (const line of jsonl.split('\n')) {
+    if (!line.includes('"cwd"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (typeof e.cwd === 'string' && e.cwd) return e.cwd
+    } catch (_) {}
+  }
+  return fallback
+}
+
+function aiTitleFromJsonl(jsonl) {
   if (!jsonl) return ''
   const lines = jsonl.split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -101,12 +131,11 @@ function getAiTitle(cwd, sessionId) {
 }
 
 /**
- * Find the timestamp (ms) of the most recent external user prompt — i.e. a
- * `user` entry whose content is plain text, not a `tool_result` injection.
- * Returns null if not found.
+ * Timestamp (ms) of the most recent external user prompt — a `user` entry
+ * whose content is plain text, not a `tool_result` injection. Returns null
+ * if not found.
  */
-function getLastUserPromptMs(cwd, sessionId) {
-  const jsonl = readSessionJsonl(cwd, sessionId)
+function lastUserPromptMsFromJsonl(jsonl) {
   if (!jsonl) return null
   const lines = jsonl.split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -124,21 +153,53 @@ function getLastUserPromptMs(cwd, sessionId) {
   return null
 }
 
+/**
+ * Latest assistant text — Claude's final reply for this turn. Skips tool-only
+ * entries (an assistant turn often contains multiple chunks; the last one
+ * with actual text is what the user sees as "Claude's response").
+ */
+function lastAssistantTextFromJsonl(jsonl) {
+  if (!jsonl) return ''
+  const lines = jsonl.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]
+    if (!line.includes('"type":"assistant"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type !== 'assistant') continue
+      const c = e.message?.content
+      if (!Array.isArray(c)) continue
+      const text = c
+        .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text)
+        .join('\n')
+        .trim()
+      if (text) return text
+    } catch (_) {}
+  }
+  return ''
+}
+
+
 // ---------- Actions ----------
 
-async function notify(post, input, mode) {
-  const project = input.cwd ? basename(input.cwd) : 'unknown'
-  const aiTitle = getAiTitle(input.cwd, input.session_id)
-  const titlePrefix = mode === 'stop' ? '✅' : '⚠️'
-  const kind = mode === 'stop' ? 'completed' : 'waiting'
+/**
+ * Forward raw turn data to backend. Title/body formatting lives server-side
+ * so this script stays a thin event forwarder. The jsonl is parsed locally
+ * because only the PC has access to `~/.claude/projects/...`.
+ */
+async function notifyStop(post, input) {
+  const jsonl = readSessionJsonl(input.cwd, input.session_id)
+  const cwd = canonicalCwdFromJsonl(jsonl, input.cwd ?? '')
+  const startMs = lastUserPromptMsFromJsonl(jsonl)
   await post('/v1/notifications', {
     session_id: input.session_id ?? 'unknown',
-    cwd: input.cwd ?? '',
-    project_name: project,
-    session_label: aiTitle,
-    kind,
-    title: `${titlePrefix} ${aiTitle || project}`,
-    body: '',
+    cwd,
+    project_name: cwd ? basename(cwd) : 'unknown',
+    session_label: aiTitleFromJsonl(jsonl),
+    kind: 'completed',
+    elapsed_ms: startMs !== null ? Date.now() - startMs : null,
+    full_message: lastAssistantTextFromJsonl(jsonl),
   })
 }
 
@@ -160,7 +221,8 @@ function shouldNotifyStop(input, env) {
   // Skip the completion push for short turns. Threshold defaults to 3 min,
   // overridable via CC_REMOTE_STOP_THRESHOLD_MS in the env file. If the start
   // time can't be determined, notify to avoid silently dropping signals.
-  const startMs = getLastUserPromptMs(input.cwd, input.session_id)
+  const jsonl = readSessionJsonl(input.cwd, input.session_id)
+  const startMs = lastUserPromptMsFromJsonl(jsonl)
   if (startMs === null) return true
   const thresholdMs = Number.parseInt(env.CC_REMOTE_STOP_THRESHOLD_MS ?? '180000', 10)
   return Date.now() - startMs >= thresholdMs
@@ -170,16 +232,13 @@ switch (mode) {
   case 'stop':
     await dismissPending(post, input)
     if (shouldNotifyStop(input, env)) {
-      await notify(post, input, 'stop')
+      await notifyStop(post, input)
     }
-    break
-  case 'notify':
-    await notify(post, input, 'notify')
     break
   case 'posttool':
     await dismissPending(post, input)
     break
   default:
-    log(`unknown mode '${mode}' (expected: stop | notify | posttool)`)
+    log(`unknown mode '${mode}' (expected: stop | posttool)`)
     process.exit(1)
 }

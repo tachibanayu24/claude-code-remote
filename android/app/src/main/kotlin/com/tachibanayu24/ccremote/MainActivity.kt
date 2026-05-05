@@ -21,7 +21,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.tachibanayu24.ccremote.notification.ApprovalActionReceiver
 import com.tachibanayu24.ccremote.notification.ApprovalPayload
+import com.tachibanayu24.ccremote.notification.CompletionPayload
 import com.tachibanayu24.ccremote.ui.ApprovalDialog
+import com.tachibanayu24.ccremote.ui.CompletionDialog
 import com.tachibanayu24.ccremote.ui.HomeScreen
 import com.tachibanayu24.ccremote.ui.MainViewModel
 import com.tachibanayu24.ccremote.ui.SetupScreen
@@ -53,6 +55,7 @@ class MainActivity : ComponentActivity() {
                     val saveError by vmCompose.saveError.collectAsState()
                     val isWorking by vmCompose.isWorking.collectAsState()
                     val approval by vmCompose.approval.collectAsState()
+                    val completion by vmCompose.completion.collectAsState()
 
                     val current = config
                     if (current == null) {
@@ -79,6 +82,13 @@ class MainActivity : ComponentActivity() {
                             onDismiss = { vmCompose.dismissApproval() },
                         )
                     }
+
+                    completion?.let { payload ->
+                        CompletionDialog(
+                            payload = payload,
+                            onDismiss = { vmCompose.dismissCompletion() },
+                        )
+                    }
                 }
             }
         }
@@ -90,11 +100,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        if (intent?.action != ACTION_VIEW_APPROVAL) return
-        val payload = ApprovalPayload.fromBundle(intent.extras) ?: return
-        vm.showApproval(payload)
-        // Tap auto-cancels the notification, but be defensive in case Android delivered both.
-        NotificationManagerCompat.from(this).cancel(payload.notificationId)
+        when (intent?.action) {
+            ACTION_VIEW_APPROVAL -> {
+                val payload = ApprovalPayload.fromBundle(intent.extras) ?: return
+                vm.showApproval(payload)
+                NotificationManagerCompat.from(this).cancel(payload.notificationId)
+            }
+            ACTION_VIEW_COMPLETION -> {
+                val payload = CompletionPayload.fromBundle(intent.extras) ?: return
+                vm.showCompletion(payload)
+                NotificationManagerCompat.from(this).cancel(payload.notificationId)
+            }
+        }
     }
 
     private fun decide(payload: ApprovalPayload, decision: String, addToAllowlist: Boolean) {
@@ -123,5 +140,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val ACTION_VIEW_APPROVAL = "com.tachibanayu24.ccremote.action.VIEW_APPROVAL"
+        const val ACTION_VIEW_COMPLETION = "com.tachibanayu24.ccremote.action.VIEW_COMPLETION"
     }
 }

@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { formatElapsed, previewLine } from './format'
 import { notifyApprovalRequest, notifyApprovalResolved, notifyInfo } from './push'
 import type {
   ApprovalCreateRequest,
@@ -160,6 +161,16 @@ app.post('/v1/approvals/dismiss_pending', async (c) => {
 app.post('/v1/notifications', async (c) => {
   const body = await c.req.json<NotificationCreateRequest>()
   const id = crypto.randomUUID()
+  const fullMessage = body.full_message ?? ''
+  const elapsedMs = body.elapsed_ms ?? null
+  // Display strings are built here so the PC hook stays a thin event forwarder.
+  const titleHead = body.session_label || body.project_name
+  const prefix = body.kind === 'completed' ? '✅' : '⚠️'
+  const title = `${prefix} ${titleHead}`
+  const summary = body.kind === 'completed'
+    ? [formatElapsed(elapsedMs), previewLine(fullMessage)].filter(Boolean).join(' · ')
+    : ''
+
   await c.env.DB.prepare(
     `INSERT INTO notifications (id, session_id, cwd, project_name, kind, title, body, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
@@ -170,8 +181,8 @@ app.post('/v1/notifications', async (c) => {
       body.cwd,
       body.project_name,
       body.kind,
-      body.title,
-      body.body ?? null,
+      title,
+      summary || null,
       nowSec()
     )
     .run()
@@ -180,9 +191,11 @@ app.post('/v1/notifications', async (c) => {
     kind: body.kind,
     project: body.project_name,
     session_label: body.session_label ?? '',
-    title: body.title,
-    body: body.body ?? '',
+    title,
+    body: summary,
     session_id: body.session_id,
+    elapsed_ms: elapsedMs != null ? String(elapsedMs) : '',
+    full_message: fullMessage,
   })
   return c.json({ ok: true, id, notified })
 })
