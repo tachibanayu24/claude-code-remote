@@ -168,8 +168,16 @@ private fun isTableSeparator(line: String): Boolean {
     return cells.isNotEmpty() && cells.all { TABLE_SEPARATOR_CELL_RE.matches(it) }
 }
 
+// `` is a control char that won't appear in legitimate markdown — used
+// as a placeholder so the literal split('|') ignores escaped `\|` pipes
+// inside cells (e.g. a Bash command shown in a table row).
+private const val ESCAPED_PIPE_PLACEHOLDER = ""
+
 private fun parseTableRow(line: String): List<String> =
-    line.trim().trim('|').split('|').map { it.trim() }
+    line.trim().trim('|')
+        .replace("\\|", ESCAPED_PIPE_PLACEHOLDER)
+        .split('|')
+        .map { it.trim().replace(ESCAPED_PIPE_PLACEHOLDER, "|") }
 
 /**
  * Each column is its own [Column] so cells auto-align to the widest entry

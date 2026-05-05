@@ -47,3 +47,8 @@
 -keepclassmembers class * {
     @androidx.compose.runtime.Composable <methods>;
 }
+
+# Downloadable Google Fonts via Compose. Consumer rules usually cover this,
+# but keep the public API as a defensive guard so reflection-based provider
+# resolution doesn't break under minify on minor compose-ui version drift.
+-keep class androidx.compose.ui.text.googlefonts.** { *; }

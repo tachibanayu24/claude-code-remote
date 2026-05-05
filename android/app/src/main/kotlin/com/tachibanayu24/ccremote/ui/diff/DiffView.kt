@@ -7,7 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -99,7 +99,10 @@ private fun DiffRow(
         modifier = Modifier
             .fillMaxWidth()
             .background(rowBg)
-            .height(20.dp),
+            // heightIn(min) — a fixed height clipped descenders / large font
+            // scales (Settings > Display > Font size: largest). Lets the row
+            // grow when bodySmall renders taller than 20.dp.
+            .heightIn(min = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         LineNumber(displayLineNumOf(line), gutterWidth)

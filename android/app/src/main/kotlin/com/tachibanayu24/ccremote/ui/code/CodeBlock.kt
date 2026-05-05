@@ -1,5 +1,6 @@
 package com.tachibanayu24.ccremote.ui.code
 
+import android.util.Log
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -87,7 +88,13 @@ internal fun highlight(code: String, language: SyntaxLanguage?): AnnotatedString
             .theme(SyntaxThemes.atom(darkMode = true))
             .build()
             .getHighlights()
-    }.getOrElse { return AnnotatedString(code) }
+    }.getOrElse { e ->
+        // Plain-text fallback is safe, but silent failures hide real bugs
+        // (Highlights tokenizer crashes, OOM on very long lines, ...).
+        // Log so they surface in logcat without breaking the render.
+        Log.w("CodeBlock", "highlight failed for $language", e)
+        return AnnotatedString(code)
+    }
 
     return buildAnnotatedString {
         append(code)
