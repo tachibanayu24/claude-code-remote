@@ -31,10 +31,12 @@ import {
 const POLL_INTERVAL_MS = 1000
 const POLL_TIMEOUT_MS = 5 * 60 * 1000
 const SESSION_LABEL_TTL_MS = 5_000
-// Heartbeat is also the cadence at which the phone's detail screen sees
-// in-flight assistant text updates, so keep it tight. D1 writes are cheap
-// (<$0 at this volume) and 3s is "live enough" for the chat-stream UX.
-const HEARTBEAT_INTERVAL_MS = 3_000
+// Heartbeat cadence is adaptive: tight while a turn is in flight (so the
+// phone's chat stream feels live), relaxed while idle (no new data anyway,
+// just liveness). At idle we only need to refresh `last_heartbeat` inside
+// SESSION_HEARTBEAT_TTL_SEC (30s on backend) to avoid being marked closed.
+const HEARTBEAT_INFLIGHT_MS = 1_500
+const HEARTBEAT_IDLE_MS = 5_000
 const PROMPT_POLL_INTERVAL_MS = 2_000
 
 // Make sure relative imports work even when this file is invoked via symlink.
@@ -323,24 +325,41 @@ async function pollAndEmit(backendId, ccRequestId, toolName, inputPreview, cwd) 
 // ---------- Session heartbeat ----------
 
 /**
- * Tell backend we're alive every HEARTBEAT_INTERVAL_MS. Backend derives
- * `working` / `idle` / `closed` from `last_heartbeat` + `jsonl_mtime`,
- * so the only state we have to publish is "I exist + here is my latest
- * jsonl mtime". When CC dies, this subprocess dies with it and the next
- * `GET /v1/sessions` will see a stale heartbeat and mark us closed.
+ * Tell backend we're alive. Backend derives `working` / `idle` / `closed`
+ * from `last_heartbeat` + `jsonl_mtime`, so the only state we have to
+ * publish is "I exist + here is my latest jsonl mtime". When CC dies, this
+ * subprocess dies with it and the next `GET /v1/sessions` will see a stale
+ * heartbeat and mark us closed.
+ *
+ * Returns true when a turn is in flight (current_prompt != null) so the
+ * scheduler knows whether to follow up at the inflight or idle cadence.
  */
 async function sendHeartbeat() {
-  if (!BACKEND || !SECRET) return
+  if (!BACKEND || !SECRET) return false
   const snapshot = inspectSession()
   // Backend's sessions table is keyed by session_id now; without one there's
   // nothing to upsert. Skip silently — channel.mjs spawned by older CC that
   // doesn't write the ppid file would otherwise spam 400s.
-  if (!snapshot.session_id) return
+  if (!snapshot.session_id) return false
   try {
     await apiPost('/v1/sessions/heartbeat', snapshot)
   } catch (e) {
     log(`heartbeat failed: ${e.message ?? e}`)
   }
+  return snapshot.current_prompt != null
+}
+
+/**
+ * Self-rescheduling heartbeat loop. setTimeout instead of setInterval so the
+ * next interval can be picked based on whether we're in-flight or idle —
+ * D1 writes scale with cadence, and being tight only when it matters keeps
+ * us comfortably under the free-tier write budget.
+ */
+function scheduleHeartbeat(delay) {
+  setTimeout(async () => {
+    const inflight = await sendHeartbeat()
+    scheduleHeartbeat(inflight ? HEARTBEAT_INFLIGHT_MS : HEARTBEAT_IDLE_MS)
+  }, delay).unref()
 }
 
 // ---------- Prompt drain (phone → CC injection) ----------
@@ -399,7 +418,9 @@ async function drainPrompts() {
 await mcp.connect(new StdioServerTransport())
 log(`connected (backend=${BACKEND ? 'configured' : 'missing'})`)
 
-sendHeartbeat()
+// Kick off immediately; the loop self-paces from the first response.
+sendHeartbeat().then((inflight) =>
+  scheduleHeartbeat(inflight ? HEARTBEAT_INFLIGHT_MS : HEARTBEAT_IDLE_MS),
+)
 // .unref() so an exiting CC parent isn't kept alive by these timers.
-setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS).unref()
 setInterval(drainPrompts, PROMPT_POLL_INTERVAL_MS).unref()
