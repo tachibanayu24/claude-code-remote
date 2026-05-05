@@ -11,7 +11,6 @@ import type { Bindings, SessionHeartbeatRequest, SessionRow, TurnRow } from '../
 const app = new Hono<{ Bindings: Bindings }>()
 
 const SESSION_HEARTBEAT_TTL_SEC = 30
-const SESSION_WORKING_TTL_MS = 5_000
 const TURNS_DEFAULT_LIMIT = 20
 const TURNS_MAX_LIMIT = 50
 // Window during which delivered prompts are still surfaced to the detail
@@ -94,10 +93,14 @@ app.get('/', async (c) => {
     // jsonl_mtime is a fractional ms epoch on macOS — floor before exposing
     // so JSON consumers (Android Long) don't fail to deserialize.
     const jsonlAgeMs = row.jsonl_mtime ? Math.floor(nowMs - row.jsonl_mtime) : null
+    // working = ターン処理中。channel.mjs が「最後の user prompt 以降に
+    // end_turn が無い」ときだけ current_prompt を立て、Stop hook で NULL に
+    // 戻すので、これが in-flight の正準シグナル。jsonl_mtime ベースの近似
+    // (5s 以内に追記があるか) だと長い Bash や思考中に idle 誤判定が出る。
     let state: 'working' | 'awaiting_approval' | 'idle' | 'closed'
     if (heartbeatAgeSec > SESSION_HEARTBEAT_TTL_SEC) state = 'closed'
     else if (pendingCount > 0) state = 'awaiting_approval'
-    else if (jsonlAgeMs !== null && jsonlAgeMs < SESSION_WORKING_TTL_MS) state = 'working'
+    else if (row.current_prompt) state = 'working'
     else state = 'idle'
     return {
       session_id: row.session_id,

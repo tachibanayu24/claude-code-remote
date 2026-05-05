@@ -110,13 +110,12 @@ function getSessionLabel() {
 
 /**
  * Snapshot of session state, sent to backend once per heartbeat tick.
- * `jsonl_mtime` is what backend uses to derive `working` vs `idle` —
- * mtime is bumped on every assistant chunk / tool result write.
  *
  * `current_prompt` and `current_assistant_text` are populated only while a
  * turn is in flight (latest user prompt has no `end_turn` after it). Both
  * are nulled out on the Stop hook by the backend, so we don't have to race
- * against it here.
+ * against it here. Backend derives `working` vs `idle` from current_prompt
+ * — jsonl_mtime is exposed to clients as a freshness hint only.
  */
 function inspectSession() {
   const sess = readPpidSession()
