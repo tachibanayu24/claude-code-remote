@@ -4,6 +4,7 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,11 +20,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import com.tachibanayu24.ccremote.ui.theme.CodeFontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.tachibanayu24.ccremote.ui.code.highlight
+import com.tachibanayu24.ccremote.ui.theme.CodeFontFamily
 import dev.snipme.highlights.model.SyntaxLanguage
 
 private val AddBg = Color(0x3322C55E)   // green tint
@@ -32,9 +33,10 @@ private val ContextBg = Color.Transparent
 
 /**
  * GitHub-style unified diff render. Each row is `[line# | +/-/" " | code]`.
- * The code column wraps `horizontalScroll`; sharing the same `ScrollState`
- * across rows makes dragging one line scroll the whole diff in lock-step.
- * The line-number gutter stays fixed in the visible viewport.
+ * The whole diff is a single horizontal-scroll region — line numbers, marker
+ * and code all move together. `Modifier.width(IntrinsicSize.Max)` on the
+ * Column makes every row size to the widest line so add/del row tints fill
+ * uniformly to the right edge.
  *
  * Single line-number column (not GitHub's two): for context rows we show
  * the new-side number, for adds the new-side, for dels the old-side. On a
@@ -49,24 +51,27 @@ fun DiffView(
 ) {
     if (lines.isEmpty()) return
     val gutterWidth: Dp = remember(lines) {
-        // Just enough room for the widest line number, no extra padding —
-        // the row's body padding already separates it from the marker. ~7sp
-        // per digit in our small monospace style.
+        // ~9sp per digit at bodySmall (12sp) Fira Code; pad +6 so the
+        // rightmost digit doesn't kiss the marker column.
         val maxDigits = lines
             .maxOf { displayLineNumOf(it) }
             .toString()
             .length
             .coerceAtLeast(2)
-        (maxDigits * 7).dp
+        (maxDigits * 9 + 6).dp
     }
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(6.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
     ) {
-        Column {
+        Column(
+            modifier = Modifier
+                .horizontalScroll(scrollState)
+                .width(IntrinsicSize.Max),
+        ) {
             for (line in lines) {
-                DiffRow(line, language, gutterWidth, scrollState)
+                DiffRow(line, language, gutterWidth)
             }
         }
     }
@@ -77,7 +82,6 @@ private fun DiffRow(
     line: DiffLine,
     language: SyntaxLanguage?,
     gutterWidth: Dp,
-    scroll: ScrollState,
 ) {
     val (rowBg, marker) = when (line) {
         is DiffLine.Add -> AddBg to "+"
@@ -99,16 +103,13 @@ private fun DiffRow(
             fontFamily = CodeFontFamily,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        // weight(1f) gives the code column the *remaining* row width — without
-        // it, horizontalScroll inside a Row child sees infinite max-width and
-        // the inner Text takes its full intrinsic width, exceeding the row
-        // and leaving nothing for the scroll modifier to actually scroll.
+        // No weight / no per-row scroll: the parent Column handles horizontal
+        // scrolling for the whole region. softWrap=false lets the Text take
+        // its full intrinsic width, which feeds into the Column's
+        // IntrinsicSize.Max measurement.
         Text(
             text = remember(line.text, language) { highlight(line.text, language) },
-            modifier = Modifier
-                .weight(1f)
-                .horizontalScroll(scroll)
-                .padding(horizontal = 6.dp),
+            modifier = Modifier.padding(end = 6.dp),
             fontFamily = CodeFontFamily,
             style = MaterialTheme.typography.bodySmall,
             softWrap = false,
@@ -130,11 +131,14 @@ private fun displayLineNumOf(line: DiffLine): Int = when (line) {
 
 @Composable
 private fun LineNumber(num: Int, width: Dp) {
+    // Modifier order matters: padding *then* width so the digit area is the
+    // full `width` and the padding sits outside it. The opposite order eats
+    // into the digit area and clips multi-digit numbers.
     Text(
         text = num.toString(),
         modifier = Modifier
-            .width(width)
-            .padding(start = 6.dp, end = 4.dp),
+            .padding(start = 6.dp, end = 4.dp)
+            .width(width),
         style = MaterialTheme.typography.bodySmall,
         fontFamily = CodeFontFamily,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
