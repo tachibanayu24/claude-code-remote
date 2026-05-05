@@ -7,7 +7,7 @@
 ### Phase 0: ベースライン
 - D1 データベース `claude-code-remote` 作成（id `4c89f4b7-002c-4d4e-8a68-be23ea6a1f0f`、APAC region）
 - マイグレーション 0001（devices / approvals / notifications）を local + remote に適用
-- Worker `claude-code-remote` を `https://claude-code-remote.tachibanayu24.workers.dev` にデプロイ
+- Worker `claude-code-remote` を `https://claude-code-remote.<subdomain>.workers.dev` にデプロイ
 - secrets 登録済み（`SHARED_SECRET` / `FCM_PROJECT_ID` / `FCM_SERVICE_ACCOUNT_JSON`）
 - FCM service account の JWT 署名 → OAuth トークン交換まで動作確認
 

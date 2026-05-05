@@ -41,7 +41,7 @@ alias claudec='claude --dangerously-load-development-channels server:cc-remote'
 
 - **`~/.claude.json`** — `mcpServers` に `cc-remote` 登録（channel server 起動）
 - **`~/.claude/hooks/.env`** — Backend URL + shared secret (chmod 600)
-- **`~/.claude/settings.json`** — Stop / Notification(idle_prompt) hooks
+- **`~/.claude/settings.json`** — Stop / PostToolUse hooks
 
 ## ディレクトリ
 
@@ -50,7 +50,7 @@ alias claudec='claude --dangerously-load-development-channels server:cc-remote'
 | `channel/` | MCP channel server (Node.js, permission relay) |
 | `backend/` | Cloudflare Workers + Hono + D1 + FCM v1 |
 | `android/` | Kotlin + Jetpack Compose アプリ |
-| `hooks/` | Stop / Notification(idle_prompt) 用の hook script |
+| `hooks/` | Stop / PostToolUse 用の hook script |
 | `docs/` | 設計ノート、セッションログ |
 
 ## 主要設計

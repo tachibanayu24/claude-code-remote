@@ -9,11 +9,14 @@
 - iOS は対象外（Android のみ）
 - **個人利用、商用配布なし、public repo として GitHub 公開**
 
-## 2. 現状 (2026-05-04)
+## 2. 現状 (2026-05-05)
 
-- ntfy.sh 経由の通知は Android + Fitbit で動作確認済み
-- アプリ・バックエンド・hook はすべて未実装（本セッションで設計確定）
-- 設計監査の詳細は [`sessions/2026-05-04_実装方針確定.md`](./sessions/2026-05-04_実装方針確定.md)
+- MVP 完了。承認 / 完了通知ともスマホで受け取り→操作までエンドツーエンドで動く
+- バックエンド: Cloudflare Workers + Hono + D1 + FCM v1 にデプロイ済み (`claude-code-remote.<subdomain>.workers.dev`)
+- Android アプリ: Kotlin + Compose + Material 3、FCM data push 受信 + Approve / Always-allow / Deny + 完了通知 popup
+- PC 側: hooks (Stop / PostToolUse) と MCP channel server (`channel/channel.mjs`) で permission relay
+- 承認は **Claude Code Channels の permission relay** を採用（旧 PreToolUse ポーリング案は廃止）
+- 設計の経緯は [`sessions/2026-05-04_実装方針確定.md`](./sessions/2026-05-04_実装方針確定.md) と [`sessions/2026-05-05_channels方針確定.md`](./sessions/2026-05-05_channels方針確定.md)
 
 ## 3. アーキテクチャ
 
@@ -43,83 +46,105 @@
 
 ### 各コンポーネントの責務
 
-**PC hook script (`cc-remote-hook.js`)**
-- Claude Code の PreToolUse / Stop / Notification 等の hook から起動される Node スクリプト
-- stdin から hook イベント JSON を受け、Workers backend に POST
-- PreToolUse のときだけ backend をポーリングし、stdout に decision JSON を返す
-- 配置: `~/.claude/hooks/cc-remote-hook.js`、登録は `~/.claude/settings.json`
+**MCP channel server (`channel/channel.mjs`)**
+- Claude Code が stdio で起動する subprocess。Channels の `permission_request` を受け取り backend に POST、approval id でポーリングし `permission` notification を返す
+- 「常に許可」レスポンスを受けたら `<cwd>/.claude/settings.local.json` に tool パターンを atomic に追記
+- 起動エイリアス: `claude --dangerously-load-development-channels server:cc-remote`
+
+**PC hook script (`hooks/cc-remote-hook.mjs`)**
+- Stop / PostToolUse 専用の薄い forwarder。stdin から hook イベント、`~/.claude/projects/.../<sid>.jsonl` から ai-title・経過時間・最終 assistant text を抽出して backend に POST
+- 表示整形ロジックは backend 側に集約済（this script ≒ jsonl parser のみ）
+- 配置: `~/.claude/hooks/cc-remote-hook.mjs`（symlink でリポジトリを参照）、登録は `~/.claude/settings.json`
 
 **Workers backend (Hono)**
-- 単一 Worker、エンドポイント数本
-- D1 で承認状態を管理、FCM で push を投げ、応答を受けて状態を更新
-- Workers は完全 stateless、D1 が source of truth
+- 単一 Worker。`/v1/devices/register`, `/v1/approvals*`, `/v1/hook/{stop,posttool}`
+- D1 で承認状態を管理、FCM v1 (Web Crypto RS256 JWT) で push 配送、`UNREGISTERED` トークンは自動 prune
+- Stop の閾値判定 (`STOP_THRESHOLD_MS`) も backend で。短いターンは push スキップ
+- Workers は stateless、D1 が source of truth
 
 **D1 (SQLite at edge)**
-- 承認リクエスト・デバイス登録・通知履歴の永続化
+- `devices`, `approvals`, `notifications` テーブル
 - Sequential Consistency（"read your own writes"）
 
-**Android アプリ (Kotlin + Compose)**
-- FCM の data push を受けてローカル通知を組み立て、Approve/Deny アクションボタン付きで表示
+**Android アプリ (Kotlin + Compose + Material 3)**
+- FCM data push を受けてローカル通知を組み立て、Approve / Always allow / Deny / 完了通知 popup を表示
 - アクション → BroadcastReceiver → backend POST、アプリ起動なしで完結
 - 履歴・セッション一覧画面（Phase 2）
 
-## 4. 承認フロー（PreToolUse hook）
+## 4. 承認フロー（Channels permission relay）
+
+PreToolUse hook ポーリング案は廃止し、Claude Code Channels の公式 permission relay に乗り換えた（経緯: [`sessions/2026-05-05_channels方針確定.md`](./sessions/2026-05-05_channels方針確定.md)）。
 
 ```mermaid
 sequenceDiagram
   participant CC as Claude Code
-  participant H as PC Hook
+  participant Ch as channel.mjs (MCP)
   participant W as Workers
   participant D as D1
   participant F as FCM
   participant A as Android App
 
-  CC->>H: stdin (tool_use)
-  H->>W: POST /approvals
+  CC->>Ch: notifications/claude/channel/permission_request
+  Ch->>W: POST /v1/approvals
   W->>D: INSERT (status=pending)
   W->>F: send data message
   F->>A: data push
-  A-->>A: ローカル通知 (Approve/Deny)
+  A-->>A: ローカル通知 (Allow/Always allow/Deny)
 
-  loop 1秒間隔ポーリング (最大 5分)
-    H->>W: GET /approvals/:id
-    W->>D: SELECT
-    W-->>H: status
+  par PC native dialog
+    CC-->>CC: terminal で承認ダイアログ表示
+  and channel polls
+    loop 1秒間隔 (最大 5分)
+      Ch->>W: GET /v1/approvals/:id
+      W-->>Ch: status
+    end
   end
 
-  Note over A: ユーザーがタップ
-  A->>W: POST /approvals/:id/respond
-  W->>D: UPDATE (status=allow|deny)
-
-  H->>W: GET (次のポーリング)
-  W-->>H: status=allow
-  H->>CC: stdout {permissionDecision: "allow"}
-  CC->>CC: tool 実行
+  alt ユーザーがスマホで応答
+    A->>W: POST /v1/approvals/:id/respond
+    W->>D: UPDATE
+    Ch->>W: GET (次のポーリング)
+    W-->>Ch: status=allow
+    Ch->>CC: notifications/claude/channel/permission (allow)
+  else PC で先に応答
+    CC-->>CC: native dialog で answer
+    Note over Ch: PostToolUse hook が dismiss_pending 経由で<br/>D1 status=expired にし、phone 通知をキャンセル
+  end
 ```
 
-**タイムアウト時の挙動**: hook 内蔵ポーリングタイムアウト（5分）で応答が得られなければ、`{permissionDecision: "ask"}` を返して Claude Code の通常承認プロンプトに戻す。電波なし・スマホ放置でも詰まらない。
+**タイムアウト**: channel polling 5 分。応答なしなら polling 終了 (CC native dialog はそのまま)。
 
-**Claude Code 側の hook タイムアウト**: コマンド型 hook のデフォルト 600 秒のうち、内側で 300 秒運用にして余裕を残す。
+**Always allow**: phone 側で「常に許可」を選ぶと `add_to_allowlist=true` で respond される。channel.mjs が tool パターンを `<cwd>/.claude/settings.local.json` に追記（現状 Bash と WebFetch のみ — Edit/Write は CC の matcher が glob ベースで literal path がうまく機能しないため意図的に除外）。
 
-## 5. 通知フロー（承認なし — Stop / Notification hook）
+## 5. 完了通知フロー（Stop hook）
 
 ```mermaid
 sequenceDiagram
   participant CC as Claude Code
-  participant H as PC Hook
+  participant H as cc-remote-hook.mjs
   participant W as Workers
+  participant D as D1
   participant F as FCM
   participant A as Android App
 
-  CC->>H: stdin (event)
-  H->>W: POST /notifications
-  W->>F: send data message
-  F->>A: data push
-  A-->>A: ローカル通知（タップで履歴）
+  CC->>H: stdin (Stop event + session_id)
+  H->>H: jsonl から ai-title / 経過時間 / 最終 assistant text 抽出
+  H->>W: POST /v1/hook/stop (raw fields)
+  W->>D: dismiss pending approvals (cwd 一致)
+  alt elapsed < STOP_THRESHOLD_MS
+    W-->>H: skipped
+  else elapsed ≥ threshold
+    W->>D: INSERT notifications
+    W->>F: data push (title, body, full_message)
+    F->>A: data push
+    A-->>A: ローカル通知 (タップで全文 popup)
+  end
   H->>CC: exit 0
 ```
 
-承認不要なので fire-and-forget。ポーリングなし。
+PostToolUse hook も `/v1/hook/posttool` にだけ POST してその cwd の pending approval を expire させる（CLI で先に答えた場合のスマホ通知クリーンアップ）。
+
+承認不要なので fire-and-forget、ポーリングなし。閾値未満なら push をスキップして連続短ターンでも煩くない。
 
 ## 6. データモデル (D1)
 
@@ -182,34 +207,43 @@ CREATE TABLE notifications (
 
 ## 8. Hook 登録例（`~/.claude/settings.json`）
 
+PreToolUse は廃止（Channels permission relay が肩代わり）。Stop と PostToolUse の 2 本だけ。
+
 ```json
 {
   "hooks": {
-    "PreToolUse": [{
-      "matcher": "Bash|Edit|Write|MultiEdit|mcp__.*",
-      "hooks": [{
-        "type": "command",
-        "command": "node ~/.claude/hooks/cc-remote-hook.js pretool",
-        "timeout": 360
-      }]
-    }],
     "Stop": [{
       "hooks": [{
         "type": "command",
-        "command": "node ~/.claude/hooks/cc-remote-hook.js stop"
+        "command": "node ~/.claude/hooks/cc-remote-hook.mjs stop",
+        "timeout": 10
       }]
     }],
-    "Notification": [{
+    "PostToolUse": [{
       "hooks": [{
         "type": "command",
-        "command": "node ~/.claude/hooks/cc-remote-hook.js notify"
+        "command": "node ~/.claude/hooks/cc-remote-hook.mjs posttool",
+        "timeout": 5
       }]
     }]
   }
 }
 ```
 
-`matcher` で承認対象を絞ることで通知過多を避ける（Read 等の安全 tool は対象外）。Claude Code 側のタイムアウト 360 秒、hook 内ポーリング 300 秒で hook 側が先に `ask` を返す設計。
+加えて `~/.claude.json` の `mcpServers` に channel server を登録:
+
+```json
+{
+  "mcpServers": {
+    "cc-remote": {
+      "command": "node",
+      "args": ["<repo>/channel/channel.mjs"]
+    }
+  }
+}
+```
+
+起動は `claude --dangerously-load-development-channels server:cc-remote`（Pro/Max + v2.1.81+ で利用可）。
 
 ## 9. ロードマップ
 
@@ -218,17 +252,15 @@ CREATE TABLE notifications (
 - [ ] FCM プロジェクト作成、service account JSON 取得
 - [ ] Android スケルトンアプリ作成、FCM トークン取得・表示
 
-### Phase 1: MVP（Approve/Deny まで）✅ 完了
-- [x] Workers: `/approvals`, `/notifications`, `/devices` エンドポイント実装
-- [x] Workers: FCM v1 呼び出し（Web Crypto JWT 署名）
-- [x] PC hook script: PreToolUse のポーリング、Stop / Notification の fire-and-forget
-- [x] backend ↔ hook エンドツーエンド動作確認（curl で承認フロー疑似）
-- [x] Android アプリ: Kotlin + Compose + Material 3 + FCM 受信 + アクション通知
+### Phase 1: MVP（Approve/Deny + 完了通知）✅ 完了
+- [x] Workers: `/v1/devices/register`, `/v1/approvals*`, `/v1/hook/{stop,posttool}` 実装
+- [x] Workers: FCM v1 呼び出し（Web Crypto JWT 署名）+ stale token 自動 prune
+- [x] PC: hook scripts (Stop / PostToolUse) と MCP channel server (Channels permission relay)
+- [x] Always allow による `<cwd>/.claude/settings.local.json` への atomic 追記
+- [x] Android: Compose + Material 3 + FCM 受信 + Approve/Always-allow/Deny + 完了通知 popup
 - [x] Android `local.properties` → `BuildConfig` 自動 bootstrap（Setup 画面スキップ）
-- [x] Android 実機での FCM data push 受信動作確認
-- [x] フル E2E（curl 承認作成 → 実機通知 → Approve タップ → D1 で `status=allow` 確認）
-
-残: PC 側 `~/.claude/settings.json` への hook 登録 → 実 Claude Code セッションでの自然な動作確認。これは PC 側の手動設定なので、ユーザーが任意のタイミングで実施。
+- [x] Android 実機 E2E（permission relay + 完了通知 popup）
+- [x] 全層コードレビュー pass + bug/security fix 一巡（timing-safe auth, allowBackup=false, dialog 必須応答, etc.）
 
 ### Phase 2: 履歴・ダッシュボード
 - [ ] Android アプリのメイン画面（履歴、フィルタ、セッション別表示）
@@ -236,7 +268,7 @@ CREATE TABLE notifications (
 
 ### Phase 3+: future work
 - 詳細は [`widget-plan.md`](./widget-plan.md)
-- 公式 Channels の進捗を見て追加プロンプト送信を追加検討
+- Channels の `additional_prompts` 仕様確定後に「phone から PC の CC に追加プロンプト送信」を検討
 
 ## 10. UI / ブランディング方針
 
@@ -261,5 +293,6 @@ CREATE TABLE notifications (
 ## 12. オープンクエスチョン
 
 - [ ] Cloudflare 既存利用量と本プロジェクト消費量の合算が無料枠内か（ダッシュボード確認）
-- [ ] Android アプリの正式名称・パッケージ ID
-- [ ] PC ↔ アプリのペアリング UX（手動入力 / QR / その他）
+- [x] Android アプリの正式名称・パッケージ ID → `cc-remote` / `com.tachibanayu24.ccremote`
+- [x] PC ↔ アプリのペアリング UX → `local.properties` を build 時に `BuildConfig` に注入する自動 bootstrap で初回入力不要
+- [ ] FCM data payload に shell command/assistant 全文が乗る件の脅威モデル明文化（個人用途では許容、配布する場合は `request_id` 経由 fetch に切り替え）
