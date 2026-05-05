@@ -17,7 +17,7 @@ app.route('/v1/devices', devices)
 app.route('/v1/approvals', approvals)
 app.route('/v1/hook', hooks)
 app.route('/v1/sessions', sessions)
-// `prompts` declares both `/sessions/:cwd/prompts*` and `/prompts/:id/...`
+// `prompts` declares both `/sessions/:sid/prompts*` and `/prompts/:id/...`
 // shapes, so it mounts at the v1 root rather than under a sub-prefix.
 app.route('/v1', prompts)
 

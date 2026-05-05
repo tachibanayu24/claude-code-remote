@@ -58,8 +58,13 @@ export interface SessionHeartbeatRequest {
   cwd: string
   ai_title?: string
   jsonl_mtime?: number  // ms epoch
-  current_prompt?: string | null  // null clears, undefined leaves untouched
-  current_assistant_text?: string | null  // partial assistant output for in-flight turn
+  // Snapshot of the in-flight turn, refreshed every heartbeat. Both fields are
+  // unconditionally written (undefined and null both store NULL) — channel.mjs
+  // is expected to send the current jsonl-derived value (or null when no turn
+  // is in flight). Callers that want to "preserve" must read the current value
+  // and re-send it.
+  current_prompt?: string | null
+  current_assistant_text?: string | null
 }
 
 export interface SessionRow {
