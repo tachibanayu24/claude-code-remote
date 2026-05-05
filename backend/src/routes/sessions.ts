@@ -21,6 +21,17 @@ const TURNS_MAX_LIMIT = 50
 // any longer and the bubble lingers as a duplicate of the in-flight one.
 const RECENT_DELIVERED_TTL_SEC = 15
 
+function parseJsonArray<T>(raw: string | null, label: string): T[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch (e) {
+    console.warn(`failed to parse ${label}: ${e}`)
+    return []
+  }
+}
+
 app.post('/heartbeat', async (c) => {
   const body = await readJson<SessionHeartbeatRequest>(c.req.raw)
   if (!body?.session_id || !body.cwd) {
@@ -164,8 +175,12 @@ app.get('/:sid/turns', async (c) => {
     id: r.id,
     user_prompt: r.user_prompt,
     assistant_text: r.assistant_text,
-    tool_summary: r.tool_summary ? JSON.parse(r.tool_summary) : [],
-    tool_calls: r.tool_calls ? JSON.parse(r.tool_calls) : [],
+    // Defensive parse: a corrupted JSON payload (manual DB tampering, half-
+    // written rows from a previous version) shouldn't take the whole detail
+    // endpoint down with a 500. Fall back to an empty list and warn — the
+    // turn still renders, just without tool / summary info.
+    tool_summary: parseJsonArray(r.tool_summary, `turn ${r.id} tool_summary`),
+    tool_calls: parseJsonArray(r.tool_calls, `turn ${r.id} tool_calls`),
     elapsed_ms: r.elapsed_ms,
     ended_at: r.ended_at,
   }))
