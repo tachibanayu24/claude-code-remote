@@ -7,6 +7,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.tachibanayu24.ccremote.MainActivity
 import com.tachibanayu24.ccremote.R
+import java.util.concurrent.atomic.AtomicInteger
 
 object NotificationFactory {
     const val CHANNEL_APPROVAL = "approval"
@@ -15,13 +16,28 @@ object NotificationFactory {
     private const val PENDING_FLAGS =
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
+    // Monotonic counter for info notifications. Avoids the
+    // `System.currentTimeMillis().hashCode()` collision risk inside the same
+    // millisecond. Starts above the 16-bit space to keep approval IDs
+    // (`requestId.hashCode()`) distinct in practice.
+    private val infoNotificationIdSeq = AtomicInteger(1_000_000)
+
     fun showApproval(context: Context, data: Map<String, String>) {
         val payload = ApprovalPayload.fromFcm(data) ?: return
         val notificationId = payload.notificationId
 
-        val approve = actionPending(context, payload, ApprovalActionReceiver.DECISION_ALLOW, false, requestCode = notificationId * 4)
-        val approveAlways = actionPending(context, payload, ApprovalActionReceiver.DECISION_ALLOW, true, requestCode = notificationId * 4 + 1)
-        val deny = actionPending(context, payload, ApprovalActionReceiver.DECISION_DENY, false, requestCode = notificationId * 4 + 2)
+        val approve = actionPending(
+            context, payload, ApprovalActionReceiver.DECISION_ALLOW,
+            addToAllowlist = false, requestCode = notificationId * 4,
+        )
+        val approveAlways = actionPending(
+            context, payload, ApprovalActionReceiver.DECISION_ALLOW,
+            addToAllowlist = true, requestCode = notificationId * 4 + 1,
+        )
+        val deny = actionPending(
+            context, payload, ApprovalActionReceiver.DECISION_DENY,
+            addToAllowlist = false, requestCode = notificationId * 4 + 2,
+        )
         val tap = openSessionPending(context, payload.cwd, requestCode = notificationId * 4 + 3)
 
         val notification = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
@@ -31,7 +47,10 @@ object NotificationFactory {
             .setStyle(NotificationCompat.BigTextStyle().bigText(payload.detail.ifBlank { payload.toolName }))
             .setSubText(payload.subText)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            // EVENT signals "user-actionable thing happening now" (recommended
+            // by Material guidelines for actionable prompts) — closer fit
+            // than REMINDER, and works with DND override channels.
+            .setCategory(NotificationCompat.CATEGORY_EVENT)
             .setAutoCancel(true)
             .setContentIntent(tap)
             .addAction(R.drawable.ic_check, "Allow", approve)
@@ -54,7 +73,7 @@ object NotificationFactory {
         val sessionLabel = data["session_label"].orEmpty()
         val cwd = data["cwd"].orEmpty()
         val subText = if (sessionLabel.isNotBlank() && project.isNotBlank()) project else null
-        val notificationId = ("info-" + System.currentTimeMillis()).hashCode()
+        val notificationId = infoNotificationIdSeq.incrementAndGet()
 
         val tap = openSessionPending(context, cwd, requestCode = notificationId)
 

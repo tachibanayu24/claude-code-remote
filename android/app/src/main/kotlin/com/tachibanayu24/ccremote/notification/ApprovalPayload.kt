@@ -1,6 +1,6 @@
 package com.tachibanayu24.ccremote.notification
 
-import org.json.JSONObject
+import com.tachibanayu24.ccremote.data.ApprovalCommandFormatter
 
 /**
  * Approval-request fields the FCM payload carries. Used to render the
@@ -21,41 +21,11 @@ data class ApprovalPayload(
 
     /** Body text shown in the notification: the most actionable bit of the input. */
     val detail: String
-        get() {
-            val parsed = runCatching { JSONObject(inputPreview) }.getOrNull()
-            val keyArg = when (toolName) {
-                "Bash" -> parsed?.optString("command")?.takeIf { it.isNotBlank() }
-                    ?: extractKey(inputPreview, "command")
-                "Edit", "Write", "MultiEdit" -> parsed?.optString("file_path")?.takeIf { it.isNotBlank() }
-                    ?: extractKey(inputPreview, "file_path")
-                "Read", "Glob" -> parsed?.optString("file_path")?.takeIf { it.isNotBlank() }
-                    ?: parsed?.optString("pattern")?.takeIf { it.isNotBlank() }
-                    ?: extractKey(inputPreview, "file_path")
-                    ?: extractKey(inputPreview, "pattern")
-                "Grep" -> parsed?.optString("pattern")?.takeIf { it.isNotBlank() }
-                    ?: extractKey(inputPreview, "pattern")
-                else -> null
-            }
-            return keyArg ?: description.takeIf { it.isNotBlank() } ?: inputPreview.ifBlank { toolName }
-        }
-
-    /**
-     * Channels truncates `input_preview` at 200 chars, which often breaks JSON
-     * mid-string. Fall back to a regex that extracts the value of `"<key>":"..."`
-     * whether or not the JSON closed cleanly. Returns the extracted value if
-     * non-blank.
-     */
-    private fun extractKey(text: String, key: String): String? {
-        val m = Regex("\"$key\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)").find(text) ?: return null
-        val raw = m.groupValues[1]
-        // Unescape JSON string escapes that we can match (subset is sufficient).
-        val unescaped = raw
-            .replace("\\\"", "\"")
-            .replace("\\\\", "\\")
-            .replace("\\n", "\n")
-            .replace("\\t", "\t")
-        return unescaped.takeIf { it.isNotBlank() }
-    }
+        get() = ApprovalCommandFormatter.extract(
+            toolName = toolName,
+            inputPreview = inputPreview,
+            fallback = description.takeIf { it.isNotBlank() } ?: toolName,
+        )
 
     /** Action label for the title — Claude's description if usable, else tool name. */
     val actionLabel: String

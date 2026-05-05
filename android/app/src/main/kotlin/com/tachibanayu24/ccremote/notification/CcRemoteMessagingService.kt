@@ -1,29 +1,33 @@
 package com.tachibanayu24.ccremote.notification
 
+import android.os.Build
 import androidx.core.app.NotificationManagerCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
-import com.tachibanayu24.ccremote.data.BackendClient
-import com.tachibanayu24.ccremote.data.ConfigStore
+import com.tachibanayu24.ccremote.data.BackendClientHolder
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import android.os.Build
 
 class CcRemoteMessagingService : FirebaseMessagingService() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Tied to the service lifetime via onDestroy; see structured concurrency
+    // guidance in Android docs. Without cancel(), launches queued by the last
+    // onNewToken can leak past service teardown.
+    private val job = SupervisorJob()
+    private val scope = CoroutineScope(job + Dispatchers.IO)
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
+    }
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
         scope.launch {
-            val config = ConfigStore.current(applicationContext) ?: return@launch
-            runCatching {
-                BackendClient(config).also {
-                    it.registerDevice(token, Build.MODEL)
-                    it.close()
-                }
-            }
+            BackendClientHolder.ensure(applicationContext)?.registerDevice(token, Build.MODEL)
         }
     }
 

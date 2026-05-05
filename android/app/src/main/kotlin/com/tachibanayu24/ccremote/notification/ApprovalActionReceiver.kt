@@ -4,10 +4,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationManagerCompat
-import com.tachibanayu24.ccremote.data.BackendClient
-import com.tachibanayu24.ccremote.data.ConfigStore
+import com.tachibanayu24.ccremote.data.BackendClientHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 class ApprovalActionReceiver : BroadcastReceiver() {
@@ -22,13 +22,16 @@ class ApprovalActionReceiver : BroadcastReceiver() {
             NotificationManagerCompat.from(context).cancel(notificationId)
         }
 
+        // BroadcastReceivers run briefly (default ANR window: 10s). goAsync()
+        // gives us up to ~10s of background time; we wrap the network call in
+        // a SupervisorJob so a single failed call doesn't crash anything else,
+        // and finish() unconditionally so we don't trigger ANR.
         val pending = goAsync()
-        CoroutineScope(Dispatchers.IO).launch {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        scope.launch {
             try {
-                val config = ConfigStore.current(context.applicationContext) ?: return@launch
-                val client = BackendClient(config)
-                runCatching { client.respondApproval(requestId, decision, addToAllowlist) }
-                client.close()
+                BackendClientHolder.ensure(context.applicationContext)
+                    ?.respondApproval(requestId, decision, addToAllowlist)
             } finally {
                 pending.finish()
             }
