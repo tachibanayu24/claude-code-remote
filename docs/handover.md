@@ -18,6 +18,7 @@
 - 承認は **Claude Code Channels の permission relay**、追加 prompt は **Channels inbound `notifications/claude/channel`** を採用（PreToolUse ポーリング案は廃止）
 - 全層リファクタ済み（2026-05-05）: backend を route 単位に分割 + `dismissPendingApprovals` を `RETURNING` でアトミック化 + cleanup を `waitUntil`、jsonl パーサーを `hooks/lib/` に集約、Android は `BackendClientHolder` でクライアントを singleton 化 + `UiState` に集約 + `Screen` sealed class でナビ管理 + `FLAG_SECURE` / DataStore backup 除外 / R8 minify。詳細はセッションログ参照
 - phone prompt の queued_command attachment 対応（2026-05-05）: CC が busy 中に届く phone prompt は jsonl に `type:"user"` ではなく `type:"attachment"` `attachment.type:"queued_command"` (`origin.kind:"channel"`) として書かれる。jsonl パーサが両形態を扱うように修正、Stop hook の user_prompt 取りこぼし + heartbeat の current_prompt 抜けを解消
+- セッション per-session_id 化（2026-05-05）: `sessions` テーブルの PK を `cwd` → `session_id` に変更。同一プロジェクトで CC を複数並行運用しても一覧で別エンティティとして表示される。`prompts` も session_id targeting に。API URL は `/v1/sessions/:cwd/...` → `/v1/sessions/:sid/...`、approval/posttool/stop hook の dismiss も session_id 単位。Android 側 navigation も `Screen.Detail(sessionId)` に
 - 設計の経緯は [`sessions/2026-05-04_実装方針確定.md`](./sessions/2026-05-04_実装方針確定.md) と [`sessions/2026-05-05_channels方針確定.md`](./sessions/2026-05-05_channels方針確定.md)、リファクタ詳細は [`sessions/2026-05-05_全層リファクタ.md`](./sessions/2026-05-05_全層リファクタ.md)
 
 ## 3. アーキテクチャ
@@ -63,7 +64,7 @@
 - 配置: `~/.claude/hooks/cc-remote-hook.mjs`（symlink でリポジトリを参照）、登録は `~/.claude/settings.json`
 
 **Workers backend (Hono)**
-- 単一 Worker。`/v1/devices/register`, `/v1/approvals*`, `/v1/hook/{stop,posttool}`, `/v1/sessions*`, `/v1/sessions/:cwd/turns`, `/v1/sessions/:cwd/prompts*`, `/v1/prompts/:id/delivered`
+- 単一 Worker。`/v1/devices/register`, `/v1/approvals*`, `/v1/hook/{stop,posttool}`, `/v1/sessions*`, `/v1/sessions/:sid/turns`, `/v1/sessions/:sid/prompts*`, `/v1/prompts/:id/delivered` (`:sid` は session_id)
 - D1 で承認 / セッション / ターン履歴 / queued prompt を管理、FCM v1 (Web Crypto RS256 JWT) で push 配送、`UNREGISTERED` トークンは自動 prune
 - Stop の閾値判定 (`STOP_THRESHOLD_MS`) も backend で。短いターンは push スキップ
 - セッション state (`working / idle / awaiting_approval / closed`) は heartbeat age + jsonl mtime + pending approval 数から導出
