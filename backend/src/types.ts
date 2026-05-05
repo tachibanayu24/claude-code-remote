@@ -98,5 +98,5 @@ export interface ApprovalRow {
   status: string
   resolved_at: number | null
   resolved_by: string | null
-  add_to_allowlist: number
+  add_to_allowlist: number | boolean
 }

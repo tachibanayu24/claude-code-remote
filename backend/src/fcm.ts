@@ -4,15 +4,23 @@ interface ServiceAccount {
 }
 
 let cachedToken: { token: string; expiresAt: number } | null = null
+let inflightToken: Promise<string> | null = null
 
 export async function getAccessToken(env: { FCM_SERVICE_ACCOUNT_JSON: string }): Promise<string> {
   const now = Date.now()
   if (cachedToken && cachedToken.expiresAt > now + 60_000) {
     return cachedToken.token
   }
+  // Single-flight: if multiple notifyXxx fan-outs hit a cold cache at once,
+  // funnel them through the same exchange instead of issuing N parallel JWTs.
+  if (inflightToken) return inflightToken
+  inflightToken = exchangeToken(env).finally(() => { inflightToken = null })
+  return inflightToken
+}
 
+async function exchangeToken(env: { FCM_SERVICE_ACCOUNT_JSON: string }): Promise<string> {
   const sa = JSON.parse(env.FCM_SERVICE_ACCOUNT_JSON) as ServiceAccount
-  const nowSec = Math.floor(now / 1000)
+  const nowSec = Math.floor(Date.now() / 1000)
   const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
   const payload = b64url(
     JSON.stringify({
@@ -42,7 +50,7 @@ export async function getAccessToken(env: { FCM_SERVICE_ACCOUNT_JSON: string }):
   const data = (await res.json()) as { access_token: string; expires_in: number }
   cachedToken = {
     token: data.access_token,
-    expiresAt: now + (data.expires_in - 60) * 1000,
+    expiresAt: Date.now() + (data.expires_in - 60) * 1000,
   }
   return data.access_token
 }
@@ -100,6 +108,36 @@ export class FcmInvalidTokenError extends Error {
   }
 }
 
+interface FcmErrorBody {
+  error?: {
+    status?: string
+    details?: Array<{ errorCode?: string; '@type'?: string }>
+  }
+}
+
+function isPermanentlyInvalidToken(status: number, errBody: string): boolean {
+  // 404: UNREGISTERED (token revoked or never existed).
+  if (status === 404) return true
+  if (status !== 400) return false
+  // 400 INVALID_ARGUMENT covers many things; only treat as invalid token when
+  // FCM tells us so via error.details[].errorCode === 'INVALID_ARGUMENT' or
+  // when the status is the FCM-specific 'INVALID_ARGUMENT' for tokens.
+  try {
+    const parsed = JSON.parse(errBody) as FcmErrorBody
+    const status = parsed.error?.status
+    if (status === 'INVALID_ARGUMENT') {
+      const details = parsed.error?.details ?? []
+      return details.some((d) =>
+        d.errorCode === 'INVALID_ARGUMENT' || d.errorCode === 'UNREGISTERED'
+      )
+    }
+    return false
+  } catch (_) {
+    // Fallback to legacy text match if the body isn't JSON.
+    return /INVALID_ARGUMENT|registration token/i.test(errBody)
+  }
+}
+
 export async function sendFcm(
   env: { FCM_SERVICE_ACCOUNT_JSON: string; FCM_PROJECT_ID: string },
   message: FcmMessage
@@ -116,10 +154,7 @@ export async function sendFcm(
   })
   if (res.ok) return
   const err = await res.text()
-  // FCM v1 returns 404 for UNREGISTERED and 400 for INVALID_ARGUMENT (bad
-  // token format). Both mean the token will never work — surface as a typed
-  // error so the caller can prune the device.
-  if (res.status === 404 || (res.status === 400 && /INVALID_ARGUMENT|registration token/i.test(err))) {
+  if (isPermanentlyInvalidToken(res.status, err)) {
     throw new FcmInvalidTokenError(message.token, res.status, err)
   }
   throw new Error(`FCM send failed: ${res.status} ${err}`)
