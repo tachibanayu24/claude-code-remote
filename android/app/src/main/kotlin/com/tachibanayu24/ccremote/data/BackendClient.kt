@@ -62,13 +62,20 @@ class BackendClient(private val config: Config) {
     }.getOrDefault(emptyList())
 
     suspend fun sessionDetail(cwd: String, limit: Int = 5): SessionDetailResponse? = runCatching {
-        // Encode the cwd as a single URL path segment. URLEncoder uses + for
-        // spaces (form encoding), so swap that to %20 which is what path
-        // parsers expect.
-        val encoded = java.net.URLEncoder.encode(cwd, "UTF-8").replace("+", "%20")
-        val res: HttpResponse = http.get("${config.backendUrl}/v1/sessions/$encoded/turns?limit=$limit")
+        val res: HttpResponse = http.get("${config.backendUrl}/v1/sessions/${encodeCwd(cwd)}/turns?limit=$limit")
         if (!res.status.isSuccess()) null else res.body<SessionDetailResponse>()
     }.getOrNull()
+
+    suspend fun postPrompt(cwd: String, text: String): Boolean = runCatching {
+        val res: HttpResponse = http.post("${config.backendUrl}/v1/sessions/${encodeCwd(cwd)}/prompts") {
+            setBody(PromptCreateRequest(text))
+        }
+        res.status.isSuccess()
+    }.getOrDefault(false)
+
+    private fun encodeCwd(cwd: String): String =
+        // URLEncoder uses '+' for spaces (form encoding); path parsers expect %20.
+        java.net.URLEncoder.encode(cwd, "UTF-8").replace("+", "%20")
 
     suspend fun sendTestNotification() {
         http.post("${config.backendUrl}/v1/hook/stop") {

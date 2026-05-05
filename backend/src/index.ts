@@ -9,6 +9,8 @@ import type {
   DeviceRegisterRequest,
   HookPosttoolRequest,
   HookStopRequest,
+  PromptCreateRequest,
+  PromptRow,
   SessionHeartbeatRequest,
   SessionRow,
   TurnRow,
@@ -96,6 +98,7 @@ app.post('/v1/approvals', async (c) => {
 
   const notified = await notifyApprovalRequest(c.env, c.env.DB, {
     request_id: id,
+    cwd: body.cwd ?? '',
     project: body.project_name,
     session_label: body.session_label ?? '',
     tool_name: body.tool_name,
@@ -207,10 +210,12 @@ app.post('/v1/hook/stop', async (c) => {
         nowSec()
       )
       .run()
-    // The Stop event ends an in-flight turn — clear the live prompt marker so
-    // the detail screen stops showing it as "current".
-    await c.env.DB.prepare('UPDATE sessions SET current_prompt = NULL WHERE cwd = ?')
-      .bind(cwd).run()
+    // The Stop event ends an in-flight turn — clear both the live prompt
+    // marker and the partial assistant text so the detail screen stops
+    // showing them as "current".
+    await c.env.DB.prepare(
+      'UPDATE sessions SET current_prompt = NULL, current_assistant_text = NULL WHERE cwd = ?'
+    ).bind(cwd).run()
   }
 
   // Threshold gate: skip the FCM push for short turns. Backend-side so the PC
@@ -238,6 +243,7 @@ app.post('/v1/hook/stop', async (c) => {
 
   const notified = await notifyInfo(c.env, c.env.DB, {
     kind: 'completed',
+    cwd,
     project,
     session_label: aiTitle,
     title,
@@ -266,8 +272,8 @@ app.post('/v1/sessions/heartbeat', async (c) => {
   const project = basename(body.cwd) || 'unknown'
   const now = nowSec()
   await c.env.DB.prepare(
-    `INSERT INTO sessions (cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat, updated_at, current_prompt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO sessions (cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat, updated_at, current_prompt, current_assistant_text)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(cwd) DO UPDATE SET
        session_id = excluded.session_id,
        project_name = excluded.project_name,
@@ -275,7 +281,8 @@ app.post('/v1/sessions/heartbeat', async (c) => {
        jsonl_mtime = excluded.jsonl_mtime,
        last_heartbeat = excluded.last_heartbeat,
        updated_at = excluded.updated_at,
-       current_prompt = excluded.current_prompt`
+       current_prompt = excluded.current_prompt,
+       current_assistant_text = excluded.current_assistant_text`
   )
     .bind(
       body.cwd,
@@ -285,7 +292,8 @@ app.post('/v1/sessions/heartbeat', async (c) => {
       body.jsonl_mtime ?? null,
       now,
       now,
-      body.current_prompt ?? null
+      body.current_prompt ?? null,
+      body.current_assistant_text ?? null
     )
     .run()
   return c.json({ ok: true })
@@ -356,7 +364,7 @@ app.get('/v1/sessions/:cwd/turns', async (c) => {
     .run()
 
   const session = await c.env.DB.prepare(
-    `SELECT cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat, current_prompt
+    `SELECT cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat, current_prompt, current_assistant_text
      FROM sessions WHERE cwd = ?`
   ).bind(cwd).first<SessionRow>()
   if (!session) return c.json({ error: 'not found' }, 404)
@@ -375,6 +383,44 @@ app.get('/v1/sessions/:cwd/turns', async (c) => {
     ended_at: r.ended_at,
   }))
 
+  // Pending approvals for this cwd are surfaced in the detail screen so the
+  // user can answer Allow/Always/Deny inline instead of via a popup dialog.
+  const pendingRes = await c.env.DB.prepare(
+    `SELECT id, tool_name, tool_input, created_at
+     FROM approvals WHERE cwd = ? AND status = 'pending' ORDER BY created_at ASC`
+  ).bind(cwd).all<{ id: string; tool_name: string; tool_input: string; created_at: number }>()
+  const pendingApprovals = (pendingRes.results ?? []).map((r) => {
+    let parsed: { description?: string; input_preview?: string } = {}
+    try { parsed = JSON.parse(r.tool_input) } catch (_) {}
+    return {
+      id: r.id,
+      tool_name: r.tool_name,
+      description: parsed.description ?? '',
+      input_preview: parsed.input_preview ?? '',
+      created_at: r.created_at,
+    }
+  })
+
+  // Queued prompts (phone POST /prompts → channel.mjs drain pending). Surfaced
+  // so the app can echo the user's just-sent message immediately, before
+  // channel.mjs delivers and the heartbeat picks it up as `current_prompt`.
+  //
+  // Recently-delivered prompts are included too — there's a 2-3s gap between
+  // channel.mjs marking `delivered` and CC actually writing the user entry
+  // to jsonl (which is what heartbeat reads). Without this, the queued
+  // bubble flickers off then the in-flight bubble flickers on. The Android
+  // client de-duplicates by text against current_prompt so we don't render
+  // both bubbles at once.
+  const RECENT_DELIVERED_TTL_SEC = 60
+  const queuedRes = await c.env.DB.prepare(
+    `SELECT id, text, created_at FROM prompts
+     WHERE cwd = ? AND (
+       status = 'queued'
+       OR (status = 'delivered' AND delivered_at >= ?)
+     ) ORDER BY created_at ASC`
+  ).bind(cwd, nowSec() - RECENT_DELIVERED_TTL_SEC).all<{ id: string; text: string; created_at: number }>()
+  const queuedPrompts = queuedRes.results ?? []
+
   return c.json({
     session: {
       cwd: session.cwd,
@@ -382,13 +428,53 @@ app.get('/v1/sessions/:cwd/turns', async (c) => {
       project_name: session.project_name,
       ai_title: session.ai_title,
       current_prompt: session.current_prompt,
+      current_assistant_text: session.current_assistant_text,
       last_heartbeat: session.last_heartbeat,
       // jsonl_mtime is a fractional ms epoch on macOS; floor for JSON Long
       // consumers (Android).
       jsonl_mtime: session.jsonl_mtime != null ? Math.floor(session.jsonl_mtime) : null,
     },
     turns,
+    pending_approvals: pendingApprovals,
+    queued_prompts: queuedPrompts,
   })
+})
+
+// ===== Prompts (Android → CC injection) =====
+
+app.post('/v1/sessions/:cwd/prompts', async (c) => {
+  const cwd = decodeURIComponent(c.req.param('cwd'))
+  if (!cwd) return c.json({ error: 'cwd required' }, 400)
+  const body = await c.req.json<PromptCreateRequest>().catch(() => null)
+  const text = (body?.text ?? '').trim()
+  if (!text) return c.json({ error: 'text required' }, 400)
+  const id = crypto.randomUUID()
+  await c.env.DB.prepare(
+    `INSERT INTO prompts (id, cwd, text, status, created_at) VALUES (?, ?, ?, 'queued', ?)`
+  ).bind(id, cwd, text, nowSec()).run()
+  return c.json({ ok: true, id })
+})
+
+app.get('/v1/sessions/:cwd/prompts/queued', async (c) => {
+  const cwd = decodeURIComponent(c.req.param('cwd'))
+  if (!cwd) return c.json({ error: 'cwd required' }, 400)
+  const res = await c.env.DB.prepare(
+    `SELECT id, cwd, text, status, created_at FROM prompts
+     WHERE cwd = ? AND status = 'queued' ORDER BY created_at ASC`
+  ).bind(cwd).all<PromptRow>()
+  return c.json({ prompts: res.results ?? [] })
+})
+
+app.post('/v1/prompts/:id/delivered', async (c) => {
+  const id = c.req.param('id')
+  const result = await c.env.DB.prepare(
+    `UPDATE prompts SET status = 'delivered', delivered_at = ?
+     WHERE id = ? AND status = 'queued'`
+  ).bind(nowSec(), id).run()
+  if ((result.meta?.changes ?? 0) === 0) {
+    return c.json({ error: 'not found or already delivered' }, 404)
+  }
+  return c.json({ ok: true })
 })
 
 export default app

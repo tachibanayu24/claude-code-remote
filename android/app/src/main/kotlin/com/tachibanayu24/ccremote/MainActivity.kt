@@ -16,15 +16,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.tachibanayu24.ccremote.notification.ApprovalActionReceiver
-import com.tachibanayu24.ccremote.notification.ApprovalPayload
-import com.tachibanayu24.ccremote.notification.CompletionPayload
-import com.tachibanayu24.ccremote.ui.ApprovalDialog
-import com.tachibanayu24.ccremote.ui.CompletionDialog
 import com.tachibanayu24.ccremote.ui.HomeScreen
 import com.tachibanayu24.ccremote.ui.MainViewModel
 import com.tachibanayu24.ccremote.ui.SessionDetailScreen
@@ -57,13 +51,12 @@ class MainActivity : ComponentActivity() {
                     val token by vmCompose.fcmToken.collectAsState()
                     val saveError by vmCompose.saveError.collectAsState()
                     val isWorking by vmCompose.isWorking.collectAsState()
-                    val approval by vmCompose.approval.collectAsState()
-                    val completion by vmCompose.completion.collectAsState()
                     val sessions by vmCompose.sessions.collectAsState()
                     val isRefreshing by vmCompose.isRefreshing.collectAsState()
                     val showSettings by vmCompose.showSettings.collectAsState()
                     val selectedCwd by vmCompose.selectedCwd.collectAsState()
                     val selectedDetail by vmCompose.selectedDetail.collectAsState()
+                    val isSendingPrompt by vmCompose.isSendingPrompt.collectAsState()
 
                     // Treat detail and settings as pages: a back gesture
                     // returns to home instead of finishing the activity.
@@ -95,7 +88,10 @@ class MainActivity : ComponentActivity() {
                         SessionDetailScreen(
                             detail = selectedDetail,
                             fallbackProjectName = fallback,
+                            isSendingPrompt = isSendingPrompt,
                             onBack = vmCompose::closeSession,
+                            onSendPrompt = { text -> vmCompose.sendPrompt(selectedCwd!!, text) },
+                            onDecideApproval = vmCompose::decideApproval,
                         )
                     } else {
                         HomeScreen(
@@ -104,23 +100,6 @@ class MainActivity : ComponentActivity() {
                             onRefresh = vmCompose::refreshSessions,
                             onOpenSettings = vmCompose::openSettings,
                             onSelectSession = vmCompose::openSession,
-                        )
-                    }
-
-                    approval?.let { payload ->
-                        ApprovalDialog(
-                            payload = payload,
-                            onAllow = { decide(payload, ApprovalActionReceiver.DECISION_ALLOW, false) },
-                            onAllowAlways = { decide(payload, ApprovalActionReceiver.DECISION_ALLOW, true) },
-                            onDeny = { decide(payload, ApprovalActionReceiver.DECISION_DENY, false) },
-                            onDismiss = { vmCompose.dismissApproval() },
-                        )
-                    }
-
-                    completion?.let { payload ->
-                        CompletionDialog(
-                            payload = payload,
-                            onDismiss = { vmCompose.dismissCompletion() },
                         )
                     }
                 }
@@ -138,30 +117,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        when (intent?.action) {
-            ACTION_VIEW_APPROVAL -> {
-                val payload = ApprovalPayload.fromBundle(intent.extras) ?: return
-                vm.showApproval(payload)
-                NotificationManagerCompat.from(this).cancel(payload.notificationId)
-            }
-            ACTION_VIEW_COMPLETION -> {
-                val payload = CompletionPayload.fromBundle(intent.extras) ?: return
-                vm.showCompletion(payload)
-                NotificationManagerCompat.from(this).cancel(payload.notificationId)
-            }
-        }
-    }
-
-    private fun decide(payload: ApprovalPayload, decision: String, addToAllowlist: Boolean) {
-        val intent = Intent(this, ApprovalActionReceiver::class.java).apply {
-            action = ApprovalActionReceiver.ACTION_RESPOND
-            putExtra(ApprovalActionReceiver.EXTRA_REQUEST_ID, payload.requestId)
-            putExtra(ApprovalActionReceiver.EXTRA_DECISION, decision)
-            putExtra(ApprovalActionReceiver.EXTRA_ALLOWLIST, addToAllowlist)
-            putExtra(ApprovalActionReceiver.EXTRA_NOTIFICATION_ID, payload.notificationId)
-        }
-        sendBroadcast(intent)
-        vm.dismissApproval()
+        if (intent?.action != ACTION_OPEN_SESSION) return
+        val cwd = intent.getStringExtra(EXTRA_CWD)?.takeIf { it.isNotBlank() } ?: return
+        vm.openSession(cwd)
     }
 
     private fun ensureNotificationPermission() {
@@ -177,7 +135,7 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        const val ACTION_VIEW_APPROVAL = "com.tachibanayu24.ccremote.action.VIEW_APPROVAL"
-        const val ACTION_VIEW_COMPLETION = "com.tachibanayu24.ccremote.action.VIEW_COMPLETION"
+        const val ACTION_OPEN_SESSION = "com.tachibanayu24.ccremote.action.OPEN_SESSION"
+        const val EXTRA_CWD = "cwd"
     }
 }

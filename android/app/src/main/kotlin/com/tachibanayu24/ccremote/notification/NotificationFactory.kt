@@ -22,7 +22,7 @@ object NotificationFactory {
         val approve = actionPending(context, payload, ApprovalActionReceiver.DECISION_ALLOW, false, requestCode = notificationId * 4)
         val approveAlways = actionPending(context, payload, ApprovalActionReceiver.DECISION_ALLOW, true, requestCode = notificationId * 4 + 1)
         val deny = actionPending(context, payload, ApprovalActionReceiver.DECISION_DENY, false, requestCode = notificationId * 4 + 2)
-        val tap = tapPending(context, payload, requestCode = notificationId * 4 + 3)
+        val tap = openSessionPending(context, payload.cwd, requestCode = notificationId * 4 + 3)
 
         val notification = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
             .setSmallIcon(R.drawable.ic_clawd)
@@ -52,34 +52,11 @@ object NotificationFactory {
         val kind = data["kind"] ?: "info"
         val project = data["project"].orEmpty()
         val sessionLabel = data["session_label"].orEmpty()
-        val fullMessage = data["full_message"].orEmpty()
-        val elapsedMs = data["elapsed_ms"]?.toLongOrNull() ?: 0L
+        val cwd = data["cwd"].orEmpty()
         val subText = if (sessionLabel.isNotBlank() && project.isNotBlank()) project else null
         val notificationId = ("info-" + System.currentTimeMillis()).hashCode()
 
-        val tap = if (kind == "completed" && fullMessage.isNotBlank()) {
-            val payload = CompletionPayload(
-                notificationId = notificationId,
-                titleHead = sessionLabel.ifBlank { project },
-                project = project,
-                sessionLabel = sessionLabel,
-                elapsedMs = elapsedMs,
-                fullMessage = fullMessage,
-            )
-            val intent = Intent(context, MainActivity::class.java).apply {
-                action = MainActivity.ACTION_VIEW_COMPLETION
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                payload.writeToIntent(this)
-            }
-            PendingIntent.getActivity(context, notificationId, intent, PENDING_FLAGS)
-        } else {
-            PendingIntent.getActivity(
-                context,
-                notificationId,
-                Intent(context, MainActivity::class.java),
-                PENDING_FLAGS,
-            )
-        }
+        val tap = openSessionPending(context, cwd, requestCode = notificationId)
 
         val builder = NotificationCompat.Builder(context, CHANNEL_INFO)
             .setSmallIcon(R.drawable.ic_clawd)
@@ -116,11 +93,18 @@ object NotificationFactory {
         return PendingIntent.getBroadcast(context, requestCode, intent, PENDING_FLAGS)
     }
 
-    private fun tapPending(context: Context, payload: ApprovalPayload, requestCode: Int): PendingIntent {
+    /**
+     * Tap intent for both approval and completion notifications: route into
+     * the session detail screen for `cwd`. If cwd is missing (older payload
+     * or test push), fall back to the launcher behaviour.
+     */
+    private fun openSessionPending(context: Context, cwd: String, requestCode: Int): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            action = MainActivity.ACTION_VIEW_APPROVAL
-            payload.writeToIntent(this)
+            if (cwd.isNotBlank()) {
+                action = MainActivity.ACTION_OPEN_SESSION
+                putExtra(MainActivity.EXTRA_CWD, cwd)
+            }
         }
         return PendingIntent.getActivity(context, requestCode, intent, PENDING_FLAGS)
     }

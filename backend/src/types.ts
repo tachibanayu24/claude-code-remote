@@ -58,6 +58,7 @@ export interface SessionHeartbeatRequest {
   ai_title?: string
   jsonl_mtime?: number  // ms epoch
   current_prompt?: string | null  // null clears, undefined leaves untouched
+  current_assistant_text?: string | null  // partial assistant output for in-flight turn
 }
 
 export interface SessionRow {
@@ -68,6 +69,7 @@ export interface SessionRow {
   jsonl_mtime: number | null
   last_heartbeat: number
   current_prompt: string | null
+  current_assistant_text: string | null
 }
 
 export interface TurnRow {
@@ -77,6 +79,18 @@ export interface TurnRow {
   tool_summary: string | null  // JSON-encoded ToolUsage[]
   elapsed_ms: number | null
   ended_at: number
+}
+
+export interface PromptCreateRequest {
+  text: string
+}
+
+export interface PromptRow {
+  id: string
+  cwd: string
+  text: string
+  status: 'queued' | 'delivered'
+  created_at: number
 }
 
 export interface ApprovalRow {

@@ -32,6 +32,9 @@ data class HookStopRequest(
 )
 
 @Serializable
+data class PromptCreateRequest(val text: String)
+
+@Serializable
 data class Session(
     val cwd: String,
     val session_id: String? = null,
@@ -61,12 +64,29 @@ data class Turn(
 )
 
 @Serializable
+data class PendingApproval(
+    val id: String,
+    val tool_name: String,
+    val description: String = "",
+    val input_preview: String = "",
+    val created_at: Long,
+)
+
+@Serializable
+data class QueuedPrompt(
+    val id: String,
+    val text: String,
+    val created_at: Long,
+)
+
+@Serializable
 data class SessionDetailHeader(
     val cwd: String,
     val session_id: String? = null,
     val project_name: String,
     val ai_title: String? = null,
     val current_prompt: String? = null,
+    val current_assistant_text: String? = null,
     val last_heartbeat: Long,
     val jsonl_mtime: Long? = null,
 )
@@ -75,4 +95,6 @@ data class SessionDetailHeader(
 data class SessionDetailResponse(
     val session: SessionDetailHeader,
     val turns: List<Turn>,
+    val pending_approvals: List<PendingApproval> = emptyList(),
+    val queued_prompts: List<QueuedPrompt> = emptyList(),
 )

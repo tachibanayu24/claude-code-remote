@@ -105,11 +105,57 @@ function aiTitleFromJsonl(jsonl) {
   return ''
 }
 
+// Synthetic wrappers CC injects as `user` entries — slash command echoes,
+// bash-mode IO, system reminders, etc. Skip them when looking for the
+// "most recent external user prompt": they aren't what the human typed.
+const SYNTHETIC_USER_WRAPPERS = [
+  '<command-name>', '<command-message>', '<command-args>',
+  '<local-command-stdout>', '<local-command-caveat>',
+  '<bash-input>', '<bash-stdout>',
+  '<persisted-output>', '<system-reminder>', '<task-notification>',
+]
+
+const CHANNEL_WRAPPER_RE = /^<channel\b[^>]*>\n?([\s\S]*?)\n?<\/channel>\s*$/
+
+function isChannelInjectedPrompt(e) {
+  return e.origin?.kind === 'channel'
+}
+
+function isSyntheticUserEntry(e) {
+  if (isChannelInjectedPrompt(e)) return false  // real user input via phone
+  if (e.isMeta || e.isCompactSummary || e.isVisibleInTranscriptOnly) return true
+  const c = e.message?.content
+  if (Array.isArray(c) && c[0]?.type === 'tool_result') return true
+  const text = typeof c === 'string'
+    ? c
+    : Array.isArray(c)
+      ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('')
+      : ''
+  const head = text.trimStart()
+  return SYNTHETIC_USER_WRAPPERS.some((w) => head.startsWith(w))
+}
+
+function userEntryText(e) {
+  const c = e.message?.content
+  const raw = typeof c === 'string'
+    ? c
+    : Array.isArray(c)
+      ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('\n')
+      : ''
+  if (isChannelInjectedPrompt(e)) {
+    const m = raw.match(CHANNEL_WRAPPER_RE)
+    if (m) return m[1].trim()
+  }
+  return raw.trim()
+}
+
 /**
- * Most recent external user prompt — a `user` entry whose content is plain
- * text, not a `tool_result` injection. Returns `{ text, ms, lineIndex }` or
- * null if not found. lineIndex is exposed so callers can walk *forward* from
- * that point (e.g. count tool_use entries belonging to the resulting turn).
+ * Most recent external user prompt — what the human typed at the prompt
+ * (terminal or phone). Skips tool_result injections, compact-summary
+ * re-injections, slash-command echoes, bash-mode IO, and other synthetic
+ * `user` entries CC writes for its own bookkeeping. Channel-injected
+ * prompts are kept and unwrapped. Returns `{ text, ms, lineIndex }` or
+ * null if none found. lineIndex is exposed so callers can walk forward.
  */
 function lastUserPromptFromJsonl(jsonl) {
   if (!jsonl) return null
@@ -120,15 +166,9 @@ function lastUserPromptFromJsonl(jsonl) {
     try {
       const e = JSON.parse(line)
       if (e.type !== 'user') continue
-      const c = e.message?.content
-      if (Array.isArray(c) && c[0]?.type === 'tool_result') continue
-      const text = typeof c === 'string'
-        ? c
-        : Array.isArray(c)
-          ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('\n')
-          : ''
+      if (isSyntheticUserEntry(e)) continue
       const ms = e.timestamp ? Date.parse(e.timestamp) : null
-      return { text: text.trim(), ms, lineIndex: i }
+      return { text: userEntryText(e), ms, lineIndex: i }
     } catch (_) {}
   }
   return null

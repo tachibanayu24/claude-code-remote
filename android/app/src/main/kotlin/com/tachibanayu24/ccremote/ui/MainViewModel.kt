@@ -13,8 +13,6 @@ import com.tachibanayu24.ccremote.data.Config
 import com.tachibanayu24.ccremote.data.ConfigStore
 import com.tachibanayu24.ccremote.data.Session
 import com.tachibanayu24.ccremote.data.SessionDetailResponse
-import com.tachibanayu24.ccremote.notification.ApprovalPayload
-import com.tachibanayu24.ccremote.notification.CompletionPayload
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,18 +36,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _isWorking = MutableStateFlow(false)
     val isWorking: StateFlow<Boolean> = _isWorking
 
-    private val _approval = MutableStateFlow<ApprovalPayload?>(null)
-    val approval: StateFlow<ApprovalPayload?> = _approval
-
-    fun showApproval(payload: ApprovalPayload) { _approval.value = payload }
-    fun dismissApproval() { _approval.value = null }
-
-    private val _completion = MutableStateFlow<CompletionPayload?>(null)
-    val completion: StateFlow<CompletionPayload?> = _completion
-
-    fun showCompletion(payload: CompletionPayload) { _completion.value = payload }
-    fun dismissCompletion() { _completion.value = null }
-
     private val _sessions = MutableStateFlow<List<Session>>(emptyList())
     val sessions: StateFlow<List<Session>> = _sessions
 
@@ -68,11 +54,21 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _selectedDetail = MutableStateFlow<SessionDetailResponse?>(null)
     val selectedDetail: StateFlow<SessionDetailResponse?> = _selectedDetail
 
+    private val _isSendingPrompt = MutableStateFlow(false)
+    val isSendingPrompt: StateFlow<Boolean> = _isSendingPrompt
+
     private var detailPollJob: Job? = null
 
     fun openSession(cwd: String) {
+        // If already on this session, leave the existing poll running so the
+        // current detail data isn't briefly cleared.
+        if (_selectedCwd.value == cwd) return
         _selectedCwd.value = cwd
         _selectedDetail.value = null
+        startDetailPolling(cwd)
+    }
+
+    private fun startDetailPolling(cwd: String) {
         detailPollJob?.cancel()
         detailPollJob = viewModelScope.launch {
             while (_selectedCwd.value == cwd) {
@@ -84,7 +80,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                     client.close()
                 }
-                delay(15_000)
+                // Match the channel.mjs heartbeat cadence so the live in-flight
+                // assistant text feels responsive without busy-looping.
+                delay(3_000)
             }
         }
     }
@@ -104,6 +102,47 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             _sessions.value = runCatching { client.listSessions() }.getOrDefault(emptyList())
             client.close()
             _isRefreshing.value = false
+        }
+    }
+
+    /**
+     * Enqueue a prompt for `cwd`. The PC's channel.mjs polls and injects it
+     * as the next user turn. We optimistically refresh detail right after so
+     * the UI feels snappy even before the next 3s tick.
+     */
+    fun sendPrompt(cwd: String, text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty() || _isSendingPrompt.value) return
+        viewModelScope.launch {
+            val current = config.value ?: return@launch
+            _isSendingPrompt.value = true
+            try {
+                val client = BackendClient(current)
+                runCatching { client.postPrompt(cwd, trimmed) }
+                runCatching { client.sessionDetail(cwd) }.getOrNull()?.let {
+                    _selectedDetail.value = it
+                }
+                client.close()
+            } finally {
+                _isSendingPrompt.value = false
+            }
+        }
+    }
+
+    fun decideApproval(approvalId: String, decision: String, addToAllowlist: Boolean) {
+        viewModelScope.launch {
+            val current = config.value ?: return@launch
+            val client = BackendClient(current)
+            runCatching { client.respondApproval(approvalId, decision, addToAllowlist) }
+            // Refresh detail so the resolved approval disappears from the
+            // pending list immediately.
+            val cwd = _selectedCwd.value
+            if (cwd != null) {
+                runCatching { client.sessionDetail(cwd) }.getOrNull()?.let {
+                    _selectedDetail.value = it
+                }
+            }
+            client.close()
         }
     }
 

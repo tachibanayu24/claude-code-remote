@@ -8,89 +8,150 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.tachibanayu24.ccremote.data.PendingApproval
+import com.tachibanayu24.ccremote.data.QueuedPrompt
 import com.tachibanayu24.ccremote.data.SessionDetailResponse
 import com.tachibanayu24.ccremote.data.ToolUsage
 import com.tachibanayu24.ccremote.data.Turn
+
+private val InFlightAccent = Color(0xFF4ADE80)
+private val PendingAccent = Color(0xFFFACC15)
+private val QueuedAccent = Color(0xFF94A3B8)
+
+// Mirror backend SESSION_HEARTBEAT_TTL_SEC: a session that hasn't pinged in
+// 30s is considered closed and can't accept new prompts (channel.mjs is gone).
+private const val SESSION_LIVE_TTL_SEC = 30L
 
 @Composable
 fun SessionDetailScreen(
     detail: SessionDetailResponse?,
     fallbackProjectName: String,
+    isSendingPrompt: Boolean,
     onBack: () -> Unit,
+    onSendPrompt: (String) -> Unit,
+    onDecideApproval: (approvalId: String, decision: String, addToAllowlist: Boolean) -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .safeDrawingPadding(),
+            // System bars (status + nav) plus IME, taking the larger inset on
+            // each side so the keyboard never double-counts with nav bar.
+            // Explicit pattern is more predictable than safeDrawingPadding
+            // when combined with enableEdgeToEdge.
+            .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime)),
     ) {
         TopBar(
             projectName = detail?.session?.project_name ?: fallbackProjectName,
             aiTitle = detail?.session?.ai_title,
             onBack = onBack,
         )
-        if (detail == null) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
-            }
-            return@Column
-        }
 
         // Backend returns turns newest-first (DESC). Reverse for chat-style
         // chronological order: oldest at top, latest at bottom.
-        val turns = detail.turns.asReversed()
-        val currentPrompt = detail.session.current_prompt?.takeIf { it.isNotBlank() }
+        val turns = detail?.turns?.asReversed().orEmpty()
+        val pendingApprovals = detail?.pending_approvals.orEmpty()
+        val currentPrompt = detail?.session?.current_prompt?.takeIf { it.isNotBlank() }
+        val currentAssistantText = detail?.session?.current_assistant_text?.takeIf { it.isNotBlank() }
         val hasInFlight = currentPrompt != null
-
-        if (turns.isEmpty() && !hasInFlight) {
-            EmptyState()
-            return@Column
-        }
+        // Backend also returns recently-delivered prompts so the queued bubble
+        // doesn't flicker off during the gap between channel.mjs ack and the
+        // heartbeat that picks the prompt up as current_prompt. Drop any
+        // queued whose text already matches current_prompt — that one has
+        // morphed into the in-flight bubble.
+        val queuedPrompts = (detail?.queued_prompts.orEmpty()).filter { it.text != currentPrompt }
 
         val listState = rememberLazyListState()
-        // Scroll to bottom whenever the visible item count grows — covers both
-        // initial load and incremental updates from the 15s detail poll.
-        val itemCount = turns.size + if (hasInFlight) 1 else 0
-        LaunchedEffect(itemCount) {
-            if (itemCount > 0) listState.animateScrollToItem(itemCount - 1)
+        // Scroll to bottom whenever the visible content meaningfully changes —
+        // covers initial load, new committed turns, in-flight prompt arriving,
+        // partial assistant text growing, queued prompt enqueued, and pending
+        // approvals appearing.
+        val lastIndex = turns.size +
+            (if (hasInFlight) 1 else 0) +
+            queuedPrompts.size +
+            pendingApprovals.size - 1
+        val assistantLen = currentAssistantText?.length ?: 0
+        LaunchedEffect(lastIndex, assistantLen) {
+            if (lastIndex >= 0) listState.animateScrollToItem(lastIndex)
         }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            state = listState,
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                horizontal = 16.dp,
-                vertical = 12.dp,
-            ),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-        ) {
-            items(turns, key = { it.id }) { TurnBlock(it) }
-            if (currentPrompt != null) {
-                item(key = "in-flight") {
-                    InFlightBlock(currentPrompt)
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            when {
+                detail == null -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
+                }
+                turns.isEmpty() && !hasInFlight && queuedPrompts.isEmpty() && pendingApprovals.isEmpty() -> EmptyState()
+                else -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    state = listState,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        horizontal = 16.dp,
+                        vertical = 12.dp,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(20.dp),
+                ) {
+                    items(turns, key = { it.id }) { TurnBlock(it) }
+                    if (hasInFlight) {
+                        item(key = "in-flight") {
+                            InFlightBlock(prompt = currentPrompt!!, assistantText = currentAssistantText)
+                        }
+                    }
+                    items(queuedPrompts, key = { "queued-${it.id}" }) { p -> QueuedPromptBlock(p) }
+                    items(pendingApprovals, key = { "approval-${it.id}" }) { approval ->
+                        PendingApprovalBlock(approval = approval, onDecide = onDecideApproval)
+                    }
                 }
             }
         }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        val sessionIsLive = detail?.session?.last_heartbeat?.let {
+            System.currentTimeMillis() / 1000 - it < SESSION_LIVE_TTL_SEC
+        } ?: true  // optimistic before first detail load arrives
+        PromptInputBar(
+            isSending = isSendingPrompt,
+            isEnabled = sessionIsLive,
+            onSend = onSendPrompt,
+        )
     }
 }
 
@@ -160,10 +221,42 @@ private fun TurnBlock(turn: Turn) {
 }
 
 @Composable
-private fun InFlightBlock(prompt: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+private fun InFlightBlock(prompt: String, assistantText: String?) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = "▷ $prompt",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+            fontFamily = FontFamily.Monospace,
+        )
+        if (!assistantText.isNullOrBlank()) {
+            ChatMarkdown(
+                text = assistantText,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .background(InFlightAccent, CircleShape),
+            )
+            Spacer(Modifier.size(6.dp))
+            Text(
+                text = "in flight…",
+                style = MaterialTheme.typography.labelSmall,
+                color = InFlightAccent,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueuedPromptBlock(prompt: QueuedPrompt) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = "▷ ${prompt.text}",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.primary,
             fontFamily = FontFamily.Monospace,
@@ -172,17 +265,185 @@ private fun InFlightBlock(prompt: String) {
             Box(
                 modifier = Modifier
                     .size(6.dp)
-                    .background(Color(0xFF4ADE80), CircleShape),
+                    .background(QueuedAccent, CircleShape),
             )
             Spacer(Modifier.size(6.dp))
             Text(
-                text = "in flight…",
+                text = "queued… (waiting for cc to pick up)",
                 style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFF4ADE80),
+                color = QueuedAccent,
                 fontFamily = FontFamily.Monospace,
             )
         }
     }
+}
+
+@Composable
+private fun PendingApprovalBlock(
+    approval: PendingApproval,
+    onDecide: (String, String, Boolean) -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(PendingAccent, CircleShape),
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    text = "awaiting · ${approval.tool_name}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = PendingAccent,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            val description = approval.description
+                .takeIf { it.isNotBlank() && !(it.startsWith("{") && it.endsWith("}")) }
+            val command = approvalCommand(approval)
+            if (description != null && description != command) {
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (command.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = command,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(10.dp),
+                    )
+                }
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Button(
+                    onClick = { onDecide(approval.id, "allow", false) },
+                    modifier = Modifier.weight(1f),
+                ) { Text("Allow") }
+                Button(
+                    onClick = { onDecide(approval.id, "allow", true) },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiary,
+                        contentColor = MaterialTheme.colorScheme.onTertiary,
+                    ),
+                ) { Text("Always") }
+                OutlinedButton(
+                    onClick = { onDecide(approval.id, "deny", false) },
+                    modifier = Modifier.weight(1f),
+                ) { Text("Deny") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PromptInputBar(
+    isSending: Boolean,
+    isEnabled: Boolean,
+    onSend: (String) -> Unit,
+) {
+    var text by remember { mutableStateOf("") }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            modifier = Modifier.weight(1f),
+            placeholder = {
+                Text(
+                    text = if (isEnabled) "send a prompt…" else "session closed — restart cc-remote channel",
+                    fontFamily = FontFamily.Monospace,
+                )
+            },
+            textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+            maxLines = 4,
+            enabled = isEnabled && !isSending,
+        )
+        Spacer(Modifier.size(8.dp))
+        IconButton(
+            onClick = {
+                val toSend = text.trim()
+                if (toSend.isNotEmpty()) {
+                    onSend(toSend)
+                    text = ""
+                }
+            },
+            enabled = isEnabled && !isSending && text.isNotBlank(),
+        ) {
+            if (isSending) {
+                CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+            } else {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Send,
+                    contentDescription = "send",
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Pull the actually-executed command / target out of `input_preview` so the
+ * user knows what they're approving. `input_preview` is the JSON-stringified
+ * tool input (truncated to 200 chars by Channels), `description` is CC's
+ * friendly action label. Returns the tool's key argument when we can extract
+ * it (Bash → command, Edit → file_path, Grep → pattern, etc.), falling back
+ * to the raw input_preview so we never silently swallow context.
+ */
+private fun approvalCommand(approval: PendingApproval): String {
+    val parsed = runCatching { org.json.JSONObject(approval.input_preview) }.getOrNull()
+    val keyArg = when (approval.tool_name) {
+        "Bash" -> parsed?.optString("command")?.takeIf { it.isNotBlank() }
+            ?: extractKey(approval.input_preview, "command")
+        "Edit", "Write", "MultiEdit" -> parsed?.optString("file_path")?.takeIf { it.isNotBlank() }
+            ?: extractKey(approval.input_preview, "file_path")
+        "Read", "Glob" -> parsed?.optString("file_path")?.takeIf { it.isNotBlank() }
+            ?: parsed?.optString("pattern")?.takeIf { it.isNotBlank() }
+            ?: extractKey(approval.input_preview, "file_path")
+            ?: extractKey(approval.input_preview, "pattern")
+        "Grep" -> parsed?.optString("pattern")?.takeIf { it.isNotBlank() }
+            ?: extractKey(approval.input_preview, "pattern")
+        else -> null
+    }
+    return keyArg ?: approval.input_preview.ifBlank { approval.tool_name }
+}
+
+/**
+ * Channels truncates input_preview at 200 chars, often mid-string. Fall back
+ * to a regex that handles a partially-broken JSON `"<key>":"..."` pair.
+ */
+private fun extractKey(text: String, key: String): String? {
+    val m = Regex("\"$key\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)").find(text) ?: return null
+    val raw = m.groupValues[1]
+    val unescaped = raw
+        .replace("\\\"", "\"")
+        .replace("\\\\", "\\")
+        .replace("\\n", "\n")
+        .replace("\\t", "\t")
+    return unescaped.takeIf { it.isNotBlank() }
 }
 
 private fun footerLine(turn: Turn): String {
@@ -211,7 +472,7 @@ private fun formatElapsed(ms: Long?): String? {
 private fun EmptyState() {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text(
-            text = "no turns yet",
+            text = "no turns yet — send a prompt below",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontFamily = FontFamily.Monospace,

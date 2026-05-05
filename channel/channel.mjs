@@ -21,7 +21,11 @@ const ENV_PATH = process.env.CC_REMOTE_ENV ?? join(CLAUDE_HOME, 'hooks/.env')
 const POLL_INTERVAL_MS = 1000
 const POLL_TIMEOUT_MS = 5 * 60 * 1000
 const SESSION_LABEL_TTL_MS = 5_000
-const HEARTBEAT_INTERVAL_MS = 10_000
+// Heartbeat is also the cadence at which the phone's detail screen sees
+// in-flight assistant text updates, so keep it tight. D1 writes are cheap
+// (<$0 at this volume) and 3s is "live enough" for the chat-stream UX.
+const HEARTBEAT_INTERVAL_MS = 3_000
+const PROMPT_POLL_INTERVAL_MS = 2_000
 
 const log = (...args) => process.stderr.write(`[cc-remote] ${args.join(' ')}\n`)
 
@@ -107,39 +111,112 @@ function aiTitleFromJsonl(jsonl) {
   return ''
 }
 
+// Synthetic wrappers CC injects as `user` entries — slash command echoes,
+// bash-mode IO, system reminders, etc. Skip them when looking for the
+// "most recent external user prompt": they aren't what the human typed.
+const SYNTHETIC_USER_WRAPPERS = [
+  '<command-name>', '<command-message>', '<command-args>',
+  '<local-command-stdout>', '<local-command-caveat>',
+  '<bash-input>', '<bash-stdout>',
+  '<persisted-output>', '<system-reminder>', '<task-notification>',
+]
+
+const CHANNEL_WRAPPER_RE = /^<channel\b[^>]*>\n?([\s\S]*?)\n?<\/channel>\s*$/
+
 /**
- * Detect an in-flight turn: walk the jsonl from the bottom and find the most
- * recent external user prompt. If no `assistant` entry with text content
- * appears AFTER it, the turn is still in progress and we return that prompt's
- * text. Otherwise (Stop has fired) we return null so backend clears the
- * in-flight marker.
+ * Channel-injected prompts (phone → channel.mjs → CC) are written with
+ * `isMeta: true` and `origin.kind === 'channel'` because CC treats them as
+ * out-of-band notifications. They ARE real user input — strip the
+ * `<channel ...>...</channel>` wrapper and surface the inner content.
  */
-function inFlightUserPromptFromJsonl(jsonl) {
+function isChannelInjectedPrompt(e) {
+  return e.origin?.kind === 'channel'
+}
+
+function isSyntheticUserEntry(e) {
+  if (isChannelInjectedPrompt(e)) return false  // real user input via phone
+  if (e.isMeta || e.isCompactSummary || e.isVisibleInTranscriptOnly) return true
+  const c = e.message?.content
+  if (Array.isArray(c) && c[0]?.type === 'tool_result') return true
+  const text = typeof c === 'string'
+    ? c
+    : Array.isArray(c)
+      ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('')
+      : ''
+  const head = text.trimStart()
+  return SYNTHETIC_USER_WRAPPERS.some((w) => head.startsWith(w))
+}
+
+function userEntryText(e) {
+  const c = e.message?.content
+  const raw = typeof c === 'string'
+    ? c
+    : Array.isArray(c)
+      ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('\n')
+      : ''
+  if (isChannelInjectedPrompt(e)) {
+    const m = raw.match(CHANNEL_WRAPPER_RE)
+    if (m) return m[1].trim()
+  }
+  return raw.trim()
+}
+
+/**
+ * Find the most recent external user prompt — i.e. what the human actually
+ * typed at the prompt (terminal or phone). Skips tool_result injections,
+ * compact-summary re-injections, slash-command echoes, bash-mode IO, and
+ * other synthetic `user` entries CC writes for its own bookkeeping.
+ * Channel-injected prompts (phone) are kept and unwrapped. Returns the
+ * text and its line index (so callers can walk forward) or null if none.
+ */
+function lastUserPromptFromJsonl(jsonl) {
   if (!jsonl) return null
   const lines = jsonl.split('\n')
-  // Find latest user prompt index (skipping tool_result injections).
-  let promptIdx = -1
-  let promptText = ''
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]
     if (!line.includes('"type":"user"')) continue
     try {
       const e = JSON.parse(line)
       if (e.type !== 'user') continue
-      const c = e.message?.content
-      if (Array.isArray(c) && c[0]?.type === 'tool_result') continue
-      promptIdx = i
-      promptText = typeof c === 'string'
-        ? c
-        : Array.isArray(c)
-          ? c.filter((b) => b?.type === 'text').map((b) => b.text ?? '').join('\n')
-          : ''
-      break
+      if (isSyntheticUserEntry(e)) continue
+      return { text: userEntryText(e), lineIndex: i }
     } catch (_) {}
   }
-  if (promptIdx === -1) return null
-  // Look for an assistant text entry after it. If found → turn complete.
-  for (let i = promptIdx + 1; i < lines.length; i++) {
+  return null
+}
+
+/**
+ * True if any assistant entry after `fromLineIndex` carries
+ * `stop_reason: "end_turn"` — i.e. CC has finished narrating this turn.
+ */
+function hasEndTurnAfter(jsonl, fromLineIndex) {
+  if (!jsonl) return false
+  const lines = jsonl.split('\n')
+  for (let i = fromLineIndex + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.includes('"stop_reason":"end_turn"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type === 'assistant' && e.message?.stop_reason === 'end_turn') return true
+    } catch (_) {}
+  }
+  return false
+}
+
+/**
+ * Concatenate every assistant text block emitted after `fromLineIndex`,
+ * prefixed with `● ` and joined with blank lines — mirrors how CC renders
+ * interleaved chunks in the terminal. Used to surface the live, in-flight
+ * narration on the phone before Stop fires.
+ *
+ * U+25CF (BLACK CIRCLE) instead of CC's U+23FA: the latter has emoji
+ * presentation on Android and would render as a record button glyph.
+ */
+function assistantTextsAfterFromJsonl(jsonl, fromLineIndex) {
+  if (!jsonl) return ''
+  const lines = jsonl.split('\n')
+  const chunks = []
+  for (let i = Math.max(0, fromLineIndex + 1); i < lines.length; i++) {
     const line = lines[i]
     if (!line.includes('"type":"assistant"')) continue
     try {
@@ -147,11 +224,15 @@ function inFlightUserPromptFromJsonl(jsonl) {
       if (e.type !== 'assistant') continue
       const c = e.message?.content
       if (!Array.isArray(c)) continue
-      const hasText = c.some((b) => b?.type === 'text' && typeof b.text === 'string' && b.text.trim())
-      if (hasText) return null
+      const text = c
+        .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text)
+        .join('\n')
+        .trim()
+      if (text) chunks.push(text)
     } catch (_) {}
   }
-  return promptText.trim() || null
+  return chunks.map((t) => `● ${t}`).join('\n\n')
 }
 
 let labelCache = { value: '', ts: 0 }
@@ -173,6 +254,11 @@ function getSessionLabel() {
  * Snapshot of session state, sent to backend once per heartbeat tick.
  * `jsonl_mtime` is what backend uses to derive `working` vs `idle` —
  * mtime is bumped on every assistant chunk / tool result write.
+ *
+ * `current_prompt` and `current_assistant_text` are populated only while a
+ * turn is in flight (latest user prompt has no `end_turn` after it). Both
+ * are nulled out on the Stop hook by the backend, so we don't have to race
+ * against it here.
  */
 function inspectSession() {
   const sess = readPpidSession()
@@ -181,16 +267,22 @@ function inspectSession() {
   let jsonl_mtime = null
   let ai_title = ''
   let current_prompt = null
+  let current_assistant_text = null
   if (sessionId) {
     const path = jsonlPath(cwd, sessionId)
     try { jsonl_mtime = statSync(path).mtimeMs } catch (_) {}
     try {
       const jsonl = readFileSync(path, 'utf8')
       ai_title = aiTitleFromJsonl(jsonl)
-      current_prompt = inFlightUserPromptFromJsonl(jsonl)
+      const lastPrompt = lastUserPromptFromJsonl(jsonl)
+      if (lastPrompt && !hasEndTurnAfter(jsonl, lastPrompt.lineIndex)) {
+        current_prompt = lastPrompt.text || null
+        const partial = assistantTextsAfterFromJsonl(jsonl, lastPrompt.lineIndex)
+        current_assistant_text = partial || null
+      }
     } catch (_) {}
   }
-  return { cwd, session_id: sessionId, ai_title, jsonl_mtime, current_prompt }
+  return { cwd, session_id: sessionId, ai_title, jsonl_mtime, current_prompt, current_assistant_text }
 }
 
 // ---------- Allowlist file management ----------
@@ -379,8 +471,60 @@ async function sendHeartbeat() {
   }
 }
 
+// ---------- Prompt drain (phone → CC injection) ----------
+
+/**
+ * Drain queued prompts the user enqueued from the Android app and emit them
+ * into the running CC session as `notifications/claude/channel` events —
+ * Claude treats these as the next user turn.
+ *
+ * Claim-then-emit ordering: the `delivered` endpoint conditionally updates
+ * `WHERE status = 'queued'`, so it returns 200 only for the channel that
+ * wins the race when multiple CC sessions share a cwd. We only emit after
+ * winning the claim, which prevents double-injection in the rare
+ * multi-session case.
+ */
+async function drainPrompts() {
+  if (!BACKEND || !SECRET) return
+  const sess = readPpidSession()
+  const cwd = sess?.cwd ?? process.cwd()
+  const path = `/v1/sessions/${encodeURIComponent(cwd)}/prompts/queued`
+  let prompts = []
+  try {
+    const r = await apiGet(path)
+    if (!r.ok) return
+    prompts = (await r.json()).prompts ?? []
+  } catch (e) {
+    log(`prompt drain fetch failed: ${e.message ?? e}`)
+    return
+  }
+  for (const p of prompts) {
+    let claimed = false
+    try {
+      const r = await apiPost(`/v1/prompts/${p.id}/delivered`, {})
+      claimed = r.ok
+    } catch (e) {
+      log(`prompt claim failed ${p.id}: ${e.message ?? e}`)
+      continue
+    }
+    if (!claimed) continue  // another channel won the race; let them emit it
+    try {
+      await mcp.notification({
+        method: 'notifications/claude/channel',
+        params: { content: p.text, meta: { source: 'phone', prompt_id: p.id } },
+      })
+      log(`injected prompt ${p.id}`)
+    } catch (e) {
+      // We've already acked: the prompt is lost rather than duplicated. Log
+      // loudly so the user can retry from the app.
+      log(`prompt emit failed AFTER claim ${p.id}: ${e.message ?? e}`)
+    }
+  }
+}
+
 await mcp.connect(new StdioServerTransport())
 log(`connected (backend=${BACKEND ? 'configured' : 'missing'})`)
 
 sendHeartbeat()
 setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS).unref()
+setInterval(drainPrompts, PROMPT_POLL_INTERVAL_MS).unref()
