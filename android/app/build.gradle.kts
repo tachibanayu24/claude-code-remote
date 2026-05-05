@@ -32,8 +32,19 @@ android {
 
     buildTypes {
         release {
+            // R8 optimization + dead code elimination. Personal use, but
+            // shrinking still meaningfully reduces APK size and forces a
+            // proguard-rules.pro that catches reflection-based bugs early.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+        }
+        debug {
+            // Debug stays unminified for fast iteration / readable stack traces.
             isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
     compileOptions {
@@ -46,6 +57,13 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    lint {
+        // ComponentActivity (used here) has its own ActivityResultRegistry;
+        // the lint rule fires for FragmentActivity-based hosts that we don't
+        // depend on. Pulling in androidx-fragment just to silence lint would
+        // add a runtime dependency for no behavior change.
+        disable += "InvalidFragmentVersionForActivityResult"
     }
     sourceSets["main"].java.srcDirs("src/main/kotlin")
 }

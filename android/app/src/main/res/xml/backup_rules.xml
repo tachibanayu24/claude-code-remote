@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  allowBackup is false in the manifest so this is belt-and-braces.
+  DataStore lives under `datastore/`, not `sharedpref`.
+-->
 <full-backup-content>
-    <exclude domain="sharedpref" path="cc_remote_config.xml" />
+    <exclude domain="file" path="datastore/cc_remote_config.preferences_pb" />
 </full-backup-content>
