@@ -14,9 +14,9 @@ val DeepOrange = Color(0xFF8C3E1F)
 // `BgGradientBottom` (nearly black, like a horizon). `Bg` itself is a midpoint
 // reference used wherever Compose needs a single Color (e.g. the Material
 // colorScheme.background).
-val BgGradientTop = Color(0xFF1E1F2C)
-val BgGradientBottom = Color(0xFF0C0D14)
-val Bg = Color(0xFF13141C)
+val BgGradientTop = Color(0xFF15161F)
+val BgGradientBottom = Color(0xFF06070C)
+val Bg = Color(0xFF0B0C12)
 val Surface = Color(0xFF1B1C26)
 val SurfaceVariant = Color(0xFF272838)
 val OnBg = Color(0xFFE5E5E5)
