@@ -3,14 +3,12 @@ package com.tachibanayu24.ccremote.ui.diff
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -20,10 +18,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.tachibanayu24.ccremote.ui.code.highlight
 import dev.snipme.highlights.model.SyntaxLanguage
@@ -35,15 +33,14 @@ private val DelGutterBg = Color(0x50EF4444)
 private val ContextBg = Color.Transparent
 
 /**
- * GitHub-style unified diff render. Each row has:
- *   [old line# | new line#] [+/-/" "] [code text]
- * The code-text column is wrapped in a `horizontalScroll` that shares its
- * state across all rows, so dragging one line scrolls the entire diff in
- * lock-step. The line-number gutter stays fixed in the visible viewport.
+ * GitHub-style unified diff render. Each row is `[line# | +/-/" " | code]`.
+ * The code column wraps `horizontalScroll`; sharing the same `ScrollState`
+ * across rows makes dragging one line scroll the whole diff in lock-step.
+ * The line-number gutter stays fixed in the visible viewport.
  *
- * No internal scroll state is created when the caller provides one (e.g. the
- * accordion preview wants the same scroll as the expanded view, so
- * collapsing/expanding doesn't reset the position).
+ * Single line-number column (not GitHub's two): for context rows we show
+ * the new-side number, for adds the new-side, for dels the old-side. On a
+ * narrow phone the second column eats more space than it earns.
  */
 @Composable
 fun DiffView(
@@ -53,12 +50,15 @@ fun DiffView(
     scrollState: ScrollState = rememberScrollState(),
 ) {
     if (lines.isEmpty()) return
-    val gutterWidthCh = remember(lines) {
-        // Width of the largest line number, used for both old & new columns.
-        lines.maxOf { maxOf(it.oldLine ?: 0, it.newLine ?: 0) }
+    val gutterWidth: Dp = remember(lines) {
+        // ~8sp per digit + 8dp padding. Fixed-width chars in monospace keep
+        // multi-line diffs aligned without measurement gymnastics.
+        val maxDigits = lines
+            .maxOf { displayLineNumOf(it) }
             .toString()
             .length
             .coerceAtLeast(2)
+        (maxDigits * 8 + 8).dp
     }
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -67,7 +67,7 @@ fun DiffView(
     ) {
         Column {
             for (line in lines) {
-                DiffRow(line, language, gutterWidthCh, scrollState)
+                DiffRow(line, language, gutterWidth, scrollState)
             }
         }
     }
@@ -77,7 +77,7 @@ fun DiffView(
 private fun DiffRow(
     line: DiffLine,
     language: SyntaxLanguage?,
-    gutterWidthCh: Int,
+    gutterWidth: Dp,
     scroll: ScrollState,
 ) {
     val (rowBg, gutterBg, marker) = when (line) {
@@ -92,12 +92,7 @@ private fun DiffRow(
             .height(20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Approx 8sp per ch * gutterWidthCh; render line numbers in a small
-        // monospace block. Fixed-width chars keep multiline diffs aligned
-        // without measurement gymnastics.
-        val gutterDp = (gutterWidthCh * 8 + 8).dp
-        LineNumber(line.oldLine, gutterDp, gutterBg)
-        LineNumber(line.newLine, gutterDp, gutterBg)
+        LineNumber(displayLineNumOf(line), gutterWidth, gutterBg)
         Text(
             text = marker,
             modifier = Modifier
@@ -107,27 +102,39 @@ private fun DiffRow(
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Box(
+        // weight(1f) gives the code column the *remaining* row width — without
+        // it, horizontalScroll inside a Row child sees infinite max-width and
+        // the inner Text takes its full intrinsic width, exceeding the row
+        // and leaving nothing for the scroll modifier to actually scroll.
+        Text(
+            text = remember(line.text, language) { highlight(line.text, language) },
             modifier = Modifier
+                .weight(1f)
                 .horizontalScroll(scroll)
-                .widthIn(min = 0.dp),
-        ) {
-            Text(
-                text = remember(line.text, language) { highlight(line.text, language) },
-                modifier = Modifier.padding(horizontal = 6.dp),
-                fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.bodySmall,
-                softWrap = false,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
+                .padding(horizontal = 6.dp),
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodySmall,
+            softWrap = false,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
     }
 }
 
+/**
+ * Single-column line-number rule: show whichever side carries a number for
+ * this row kind. Context rows have both — pick the new-side so the column
+ * tracks the "after" state of the file.
+ */
+private fun displayLineNumOf(line: DiffLine): Int = when (line) {
+    is DiffLine.Context -> line.newLine
+    is DiffLine.Add -> line.newLine
+    is DiffLine.Del -> line.oldLine
+}
+
 @Composable
-private fun LineNumber(num: Int?, width: androidx.compose.ui.unit.Dp, bg: Color) {
+private fun LineNumber(num: Int, width: Dp, bg: Color) {
     Text(
-        text = num?.toString().orEmpty(),
+        text = num.toString(),
         modifier = Modifier
             .width(width)
             .background(bg)
