@@ -70,10 +70,11 @@ app.post('/v1/devices/register', async (c) => {
 app.post('/v1/approvals', async (c) => {
   const body = await c.req.json<ApprovalCreateRequest>()
   const id = crypto.randomUUID()
+  // tool_input is preserved in D1 for a future history view (description +
+  // input_preview, the same fields rendered in the notification body).
   const toolInput = JSON.stringify({
     description: body.description ?? '',
     input_preview: body.input_preview ?? '',
-    cc_request_id: body.cc_request_id ?? '',
   })
   await c.env.DB.prepare(
     `INSERT INTO approvals (id, session_id, cwd, project_name, tool_name, tool_input, status, created_at)
@@ -103,7 +104,7 @@ app.post('/v1/approvals', async (c) => {
 
 app.get('/v1/approvals/:id', async (c) => {
   const row = await c.env.DB.prepare(
-    `SELECT id, status, reason, resolved_at, resolved_by, add_to_allowlist
+    `SELECT id, status, resolved_at, resolved_by, add_to_allowlist
      FROM approvals WHERE id = ?`
   )
     .bind(c.req.param('id'))
@@ -124,10 +125,10 @@ app.post('/v1/approvals/:id/respond', async (c) => {
   const allowlistFlag = body.decision === 'allow' && body.add_to_allowlist ? 1 : 0
   const result = await c.env.DB.prepare(
     `UPDATE approvals
-     SET status = ?, reason = ?, resolved_at = ?, resolved_by = ?, add_to_allowlist = ?
+     SET status = ?, resolved_at = ?, resolved_by = ?, add_to_allowlist = ?
      WHERE id = ? AND status = 'pending'`
   )
-    .bind(body.decision, body.reason ?? null, nowSec(), body.device_id ?? null, allowlistFlag, id)
+    .bind(body.decision, nowSec(), body.device_id ?? null, allowlistFlag, id)
     .run()
 
   if ((result.meta?.changes ?? 0) === 0) {

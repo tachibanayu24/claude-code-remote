@@ -22,12 +22,10 @@ export interface ApprovalCreateRequest {
   tool_name: string
   description?: string
   input_preview?: string
-  cc_request_id?: string
 }
 
 export interface ApprovalRespondRequest {
   decision: 'allow' | 'deny'
-  reason?: string
   device_id?: string
   add_to_allowlist?: boolean
 }
@@ -50,7 +48,6 @@ export interface HookPosttoolRequest {
 export interface ApprovalRow {
   id: string
   status: string
-  reason: string | null
   resolved_at: number | null
   resolved_by: string | null
   add_to_allowlist: number

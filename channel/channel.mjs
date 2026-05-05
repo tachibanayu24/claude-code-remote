@@ -212,7 +212,6 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
       tool_name,
       description,
       input_preview,
-      cc_request_id: request_id,
     })
     if (!res.ok) {
       log(`backend POST failed ${request_id}: HTTP ${res.status}`)
