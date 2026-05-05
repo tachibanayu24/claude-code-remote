@@ -147,7 +147,7 @@ fun SessionDetailScreen(
             ClawdLogo(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .alpha(0.26f),
+                    .alpha(0.35f),
                 pixelSize = 10.dp,
                 interactive = false,
             )
@@ -166,7 +166,7 @@ fun SessionDetailScreen(
                     // alpha so they don't feel like opaque islands.
                     modifier = Modifier
                         .fillMaxSize()
-                        .alpha(0.92f),
+                        .alpha(0.85f),
                     state = listState,
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(20.dp),
