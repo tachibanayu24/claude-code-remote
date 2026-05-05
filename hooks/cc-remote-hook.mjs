@@ -9,7 +9,7 @@
 import { loadEnv } from './lib/env.mjs'
 import {
   aiTitleFromJsonl,
-  assistantTextsAfterFromJsonl,
+  assistantBlocksAfterFromJsonl,
   canonicalCwdFromJsonl,
   hasEndTurnAfter,
   lastUserPromptFromJsonl,
@@ -84,7 +84,16 @@ switch (mode) {
     }
     const cwd = canonicalCwdFromJsonl(jsonl, cwdInput)
     const lastPrompt = lastUserPromptFromJsonl(jsonl)
-    const fullMessage = assistantTextsAfterFromJsonl(jsonl, lastPrompt?.lineIndex ?? -1)
+    // Single walk → derive narration text + tool_calls from the same blocks
+    // so they can't drift apart on edge cases.
+    const blocks = assistantBlocksAfterFromJsonl(jsonl, lastPrompt?.lineIndex ?? -1)
+    const fullMessage = blocks
+      .filter((b) => b.kind === 'text')
+      .map((b) => `● ${b.text}`)
+      .join('\n\n')
+    const toolCalls = blocks
+      .filter((b) => b.kind === 'tool_use')
+      .map((b) => ({ name: b.name, input: b.input }))
     await post('/v1/hook/stop', {
       session_id: sid ?? '',
       cwd,
@@ -93,6 +102,7 @@ switch (mode) {
       full_message: fullMessage,
       user_prompt: lastPrompt?.text ?? '',
       tool_summary: lastPrompt ? toolUsageAfterFromJsonl(jsonl, lastPrompt.lineIndex) : [],
+      tool_calls: toolCalls,
     })
     break
   }

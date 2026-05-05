@@ -240,6 +240,41 @@ export function toolUsageAfterFromJsonl(jsonl, fromLineIndex) {
 }
 
 /**
+ * Walk every assistant entry after `fromLineIndex` and return its content
+ * blocks in order: `[{kind:'text', text}, {kind:'tool_use', name, input}]`.
+ * Other block types (`thinking`, `image`, ...) are filtered out — only
+ * narration and tool calls are surfaced. Pass `-1` to scan the entire jsonl.
+ *
+ * Callers derive both `assistant_text` (text-only join) and `tool_calls`
+ * (tool_use list) from this single walk, keeping the two views consistent.
+ */
+export function assistantBlocksAfterFromJsonl(jsonl, fromLineIndex = -1) {
+  if (!jsonl) return []
+  const lines = jsonl.split('\n')
+  const blocks = []
+  for (let i = Math.max(0, fromLineIndex + 1); i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.includes('"type":"assistant"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type !== 'assistant') continue
+      const c = e.message?.content
+      if (!Array.isArray(c)) continue
+      for (const b of c) {
+        if (!b || typeof b !== 'object') continue
+        if (b.type === 'text' && typeof b.text === 'string') {
+          const text = b.text.trim()
+          if (text) blocks.push({ kind: 'text', text })
+        } else if (b.type === 'tool_use' && typeof b.name === 'string') {
+          blocks.push({ kind: 'tool_use', name: b.name, input: b.input ?? {} })
+        }
+      }
+    } catch (_) {}
+  }
+  return blocks
+}
+
+/**
  * Concatenate every assistant text block emitted after `fromLineIndex`,
  * prefixed with `● ` and joined with blank lines — mirrors how CC renders
  * interleaved chunks in the terminal. Used both for snapshotting a
