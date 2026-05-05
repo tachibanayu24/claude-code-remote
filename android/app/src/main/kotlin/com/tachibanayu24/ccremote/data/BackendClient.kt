@@ -4,6 +4,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -54,6 +55,11 @@ class BackendClient(private val config: Config) {
             )
         }
     }
+
+    suspend fun listSessions(): List<Session> = runCatching {
+        val res: HttpResponse = http.get("${config.backendUrl}/v1/sessions")
+        if (!res.status.isSuccess()) emptyList() else res.body<SessionsResponse>().sessions
+    }.getOrDefault(emptyList())
 
     suspend fun sendTestNotification() {
         http.post("${config.backendUrl}/v1/hook/stop") {

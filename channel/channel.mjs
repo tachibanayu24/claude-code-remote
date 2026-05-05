@@ -12,7 +12,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -21,6 +21,7 @@ const ENV_PATH = process.env.CC_REMOTE_ENV ?? join(CLAUDE_HOME, 'hooks/.env')
 const POLL_INTERVAL_MS = 1000
 const POLL_TIMEOUT_MS = 5 * 60 * 1000
 const SESSION_LABEL_TTL_MS = 5_000
+const HEARTBEAT_INTERVAL_MS = 10_000
 
 const log = (...args) => process.stderr.write(`[cc-remote] ${args.join(' ')}\n`)
 
@@ -71,40 +72,73 @@ async function apiGet(path, signal) {
   return fetch(`${BACKEND}${path}`, { headers: apiHeaders, signal })
 }
 
-// ---------- Session label (CC's ai-title) ----------
+// ---------- Session lookup (sessionId / ai-title / jsonl mtime) ----------
 
 const encodeCwd = (cwd) => cwd.replace(/[\/.]/g, '-')
+
+/**
+ * Resolve our parent CC's sessionId via `~/.claude/sessions/<ppid>.json`.
+ * CC writes this file at startup with `{sessionId, cwd}`. Returns null if
+ * the file doesn't exist or can't be parsed (e.g. CC is too old to write it).
+ */
+function readPpidSession() {
+  try {
+    const sess = JSON.parse(
+      readFileSync(join(CLAUDE_HOME, 'sessions', `${process.ppid}.json`), 'utf8')
+    )
+    if (sess.sessionId && sess.cwd) return sess
+  } catch (_) {}
+  return null
+}
+
+function jsonlPath(cwd, sessionId) {
+  return join(CLAUDE_HOME, 'projects', encodeCwd(cwd), `${sessionId}.jsonl`)
+}
+
+function aiTitleFromJsonl(jsonl) {
+  const lines = jsonl.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"ai-title"')) continue
+    try {
+      const parsed = JSON.parse(lines[i])
+      if (parsed.type === 'ai-title' && parsed.aiTitle) return parsed.aiTitle
+    } catch (_) {}
+  }
+  return ''
+}
 
 let labelCache = { value: '', ts: 0 }
 
 function getSessionLabel() {
   const now = Date.now()
   if (now - labelCache.ts < SESSION_LABEL_TTL_MS) return labelCache.value
+  const sess = readPpidSession()
   let label = ''
-  try {
-    const sess = JSON.parse(
-      readFileSync(join(CLAUDE_HOME, 'sessions', `${process.ppid}.json`), 'utf8')
-    )
-    if (sess.sessionId && sess.cwd) {
-      const jsonl = readFileSync(
-        join(CLAUDE_HOME, 'projects', encodeCwd(sess.cwd), `${sess.sessionId}.jsonl`),
-        'utf8'
-      )
-      const lines = jsonl.split('\n')
-      for (let i = lines.length - 1; i >= 0; i--) {
-        if (!lines[i].includes('"ai-title"')) continue
-        try {
-          const parsed = JSON.parse(lines[i])
-          if (parsed.type === 'ai-title' && parsed.aiTitle) {
-            label = parsed.aiTitle
-            break
-          }
-        } catch (_) {}
-      }
-    }
-  } catch (_) {}
+  if (sess) {
+    try { label = aiTitleFromJsonl(readFileSync(jsonlPath(sess.cwd, sess.sessionId), 'utf8')) }
+    catch (_) {}
+  }
   labelCache = { value: label, ts: now }
   return label
+}
+
+/**
+ * Snapshot of session state, sent to backend once per heartbeat tick.
+ * `jsonl_mtime` is what backend uses to derive `working` vs `idle` —
+ * mtime is bumped on every assistant chunk / tool result write.
+ */
+function inspectSession() {
+  const sess = readPpidSession()
+  const cwd = sess?.cwd ?? process.cwd()
+  const sessionId = sess?.sessionId ?? null
+  let jsonl_mtime = null
+  let ai_title = ''
+  if (sessionId) {
+    const path = jsonlPath(cwd, sessionId)
+    try { jsonl_mtime = statSync(path).mtimeMs } catch (_) {}
+    try { ai_title = aiTitleFromJsonl(readFileSync(path, 'utf8')) } catch (_) {}
+  }
+  return { cwd, session_id: sessionId, ai_title, jsonl_mtime }
 }
 
 // ---------- Allowlist file management ----------
@@ -275,5 +309,26 @@ async function pollAndEmit(backendId, ccRequestId, toolName, inputPreview, cwd) 
   log(`timeout ${ccRequestId} — local dialog will handle`)
 }
 
+// ---------- Session heartbeat ----------
+
+/**
+ * Tell backend we're alive every HEARTBEAT_INTERVAL_MS. Backend derives
+ * `working` / `idle` / `closed` from `last_heartbeat` + `jsonl_mtime`,
+ * so the only state we have to publish is "I exist + here is my latest
+ * jsonl mtime". When CC dies, this subprocess dies with it and the next
+ * `GET /v1/sessions` will see a stale heartbeat and mark us closed.
+ */
+async function sendHeartbeat() {
+  if (!BACKEND || !SECRET) return
+  try {
+    await apiPost('/v1/sessions/heartbeat', inspectSession())
+  } catch (e) {
+    log(`heartbeat failed: ${e.message ?? e}`)
+  }
+}
+
 await mcp.connect(new StdioServerTransport())
 log(`connected (backend=${BACKEND ? 'configured' : 'missing'})`)
+
+sendHeartbeat()
+setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS).unref()

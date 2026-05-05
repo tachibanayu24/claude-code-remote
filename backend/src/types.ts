@@ -45,6 +45,22 @@ export interface HookPosttoolRequest {
   cwd: string
 }
 
+export interface SessionHeartbeatRequest {
+  cwd: string
+  session_id?: string
+  ai_title?: string
+  jsonl_mtime?: number  // ms epoch
+}
+
+export interface SessionRow {
+  cwd: string
+  session_id: string | null
+  project_name: string
+  ai_title: string | null
+  jsonl_mtime: number | null
+  last_heartbeat: number
+}
+
 export interface ApprovalRow {
   id: string
   status: string

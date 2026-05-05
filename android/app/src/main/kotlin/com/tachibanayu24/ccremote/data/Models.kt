@@ -30,3 +30,18 @@ data class HookStopRequest(
     val elapsed_ms: Long? = null,
     val full_message: String? = null,
 )
+
+@Serializable
+data class Session(
+    val cwd: String,
+    val session_id: String? = null,
+    val project_name: String,
+    val ai_title: String? = null,
+    val state: String,  // working | awaiting_approval | idle | closed
+    val pending_count: Int = 0,
+    val heartbeat_age_sec: Long = 0L,
+    val jsonl_age_ms: Long? = null,
+)
+
+@Serializable
+data class SessionsResponse(val sessions: List<Session>)

@@ -26,6 +26,7 @@ import com.tachibanayu24.ccremote.ui.ApprovalDialog
 import com.tachibanayu24.ccremote.ui.CompletionDialog
 import com.tachibanayu24.ccremote.ui.HomeScreen
 import com.tachibanayu24.ccremote.ui.MainViewModel
+import com.tachibanayu24.ccremote.ui.SettingsScreen
 import com.tachibanayu24.ccremote.ui.SetupScreen
 import com.tachibanayu24.ccremote.ui.theme.CcRemoteTheme
 
@@ -56,6 +57,9 @@ class MainActivity : ComponentActivity() {
                     val isWorking by vmCompose.isWorking.collectAsState()
                     val approval by vmCompose.approval.collectAsState()
                     val completion by vmCompose.completion.collectAsState()
+                    val sessions by vmCompose.sessions.collectAsState()
+                    val isRefreshing by vmCompose.isRefreshing.collectAsState()
+                    val showSettings by vmCompose.showSettings.collectAsState()
 
                     val current = config
                     if (current == null) {
@@ -64,12 +68,20 @@ class MainActivity : ComponentActivity() {
                             error = saveError,
                             onSave = vmCompose::saveConfig,
                         )
-                    } else {
-                        HomeScreen(
+                    } else if (showSettings) {
+                        SettingsScreen(
                             config = current,
                             fcmToken = token,
+                            onBack = vmCompose::closeSettings,
                             onResetConfig = vmCompose::resetConfig,
                             onTestNotification = vmCompose::sendTestNotification,
+                        )
+                    } else {
+                        HomeScreen(
+                            sessions = sessions,
+                            isRefreshing = isRefreshing,
+                            onRefresh = vmCompose::refreshSessions,
+                            onOpenSettings = vmCompose::openSettings,
                         )
                     }
 

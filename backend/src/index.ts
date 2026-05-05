@@ -9,6 +9,8 @@ import type {
   DeviceRegisterRequest,
   HookPosttoolRequest,
   HookStopRequest,
+  SessionHeartbeatRequest,
+  SessionRow,
 } from './types'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -224,6 +226,83 @@ app.post('/v1/hook/posttool', async (c) => {
   if (!body?.cwd) return c.json({ error: 'cwd required' }, 400)
   const dismissed = await dismissPendingApprovals(c.env.DB, c.env, body.cwd)
   return c.json({ ok: true, dismissed })
+})
+
+// ===== Sessions =====
+
+app.post('/v1/sessions/heartbeat', async (c) => {
+  const body = await c.req.json<SessionHeartbeatRequest>().catch(() => null)
+  if (!body?.cwd) return c.json({ error: 'cwd required' }, 400)
+  const project = basename(body.cwd) || 'unknown'
+  const now = nowSec()
+  await c.env.DB.prepare(
+    `INSERT INTO sessions (cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(cwd) DO UPDATE SET
+       session_id = excluded.session_id,
+       project_name = excluded.project_name,
+       ai_title = COALESCE(excluded.ai_title, sessions.ai_title),
+       jsonl_mtime = excluded.jsonl_mtime,
+       last_heartbeat = excluded.last_heartbeat,
+       updated_at = excluded.updated_at`
+  )
+    .bind(
+      body.cwd,
+      body.session_id ?? null,
+      project,
+      body.ai_title ?? null,
+      body.jsonl_mtime ?? null,
+      now,
+      now
+    )
+    .run()
+  return c.json({ ok: true })
+})
+
+const SESSION_HEARTBEAT_TTL_SEC = 30
+const SESSION_WORKING_TTL_MS = 5_000
+
+app.get('/v1/sessions', async (c) => {
+  // Drop sessions we haven't heard from in days; keeps the list tidy when a
+  // project has been retired. Tunable; 7 days is generous.
+  const STALE_AFTER_SEC = 7 * 24 * 3600
+  await c.env.DB.prepare('DELETE FROM sessions WHERE last_heartbeat < ?')
+    .bind(nowSec() - STALE_AFTER_SEC)
+    .run()
+
+  const sessionsRes = await c.env.DB.prepare(
+    `SELECT cwd, session_id, project_name, ai_title, jsonl_mtime, last_heartbeat
+     FROM sessions ORDER BY last_heartbeat DESC`
+  ).all<SessionRow>()
+  const pendingRes = await c.env.DB.prepare(
+    "SELECT cwd, COUNT(*) as cnt FROM approvals WHERE status='pending' GROUP BY cwd"
+  ).all<{ cwd: string; cnt: number }>()
+  const pendingMap = new Map((pendingRes.results ?? []).map((r) => [r.cwd, r.cnt]))
+
+  const nowMs = Date.now()
+  const sessions = (sessionsRes.results ?? []).map((r) => {
+    const pendingCount = pendingMap.get(r.cwd) ?? 0
+    const heartbeatAgeSec = Math.floor(nowMs / 1000) - r.last_heartbeat
+    // jsonl_mtime is a fractional ms epoch on macOS — floor before exposing
+    // so JSON consumers (Android Long) don't fail to deserialize.
+    const jsonlAgeMs = r.jsonl_mtime ? Math.floor(nowMs - r.jsonl_mtime) : null
+    let state: 'working' | 'awaiting_approval' | 'idle' | 'closed'
+    if (heartbeatAgeSec > SESSION_HEARTBEAT_TTL_SEC) state = 'closed'
+    else if (pendingCount > 0) state = 'awaiting_approval'
+    else if (jsonlAgeMs !== null && jsonlAgeMs < SESSION_WORKING_TTL_MS) state = 'working'
+    else state = 'idle'
+    return {
+      cwd: r.cwd,
+      session_id: r.session_id,
+      project_name: r.project_name,
+      ai_title: r.ai_title,
+      state,
+      pending_count: pendingCount,
+      heartbeat_age_sec: heartbeatAgeSec,
+      jsonl_age_ms: jsonlAgeMs,
+    }
+  })
+  return c.json({ sessions })
 })
 
 export default app

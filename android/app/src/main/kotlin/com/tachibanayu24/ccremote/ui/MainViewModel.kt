@@ -11,8 +11,10 @@ import com.tachibanayu24.ccremote.BuildConfig
 import com.tachibanayu24.ccremote.data.BackendClient
 import com.tachibanayu24.ccremote.data.Config
 import com.tachibanayu24.ccremote.data.ConfigStore
+import com.tachibanayu24.ccremote.data.Session
 import com.tachibanayu24.ccremote.notification.ApprovalPayload
 import com.tachibanayu24.ccremote.notification.CompletionPayload
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -45,6 +47,46 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun showCompletion(payload: CompletionPayload) { _completion.value = payload }
     fun dismissCompletion() { _completion.value = null }
+
+    private val _sessions = MutableStateFlow<List<Session>>(emptyList())
+    val sessions: StateFlow<List<Session>> = _sessions
+
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing
+
+    private val _showSettings = MutableStateFlow(false)
+    val showSettings: StateFlow<Boolean> = _showSettings
+
+    fun openSettings() { _showSettings.value = true }
+    fun closeSettings() { _showSettings.value = false }
+
+    fun refreshSessions() {
+        viewModelScope.launch {
+            val current = config.value ?: return@launch
+            _isRefreshing.value = true
+            val client = BackendClient(current)
+            _sessions.value = runCatching { client.listSessions() }.getOrDefault(emptyList())
+            client.close()
+            _isRefreshing.value = false
+        }
+    }
+
+    init {
+        // Background poll for the home list. 30s is plenty for an at-a-glance
+        // dashboard; pull-to-refresh covers urgency. Cancellation is automatic
+        // when the ViewModel is cleared.
+        viewModelScope.launch {
+            while (true) {
+                val current = config.value
+                if (current != null) {
+                    val client = BackendClient(current)
+                    runCatching { client.listSessions() }.getOrNull()?.let { _sessions.value = it }
+                    client.close()
+                }
+                delay(30_000)
+            }
+        }
+    }
 
     init {
         viewModelScope.launch {
