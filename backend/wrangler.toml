@@ -17,8 +17,7 @@ migrations_dir = "migrations"
 #   FCM_SERVICE_ACCOUNT_JSON — GCP service account JSON for FCM v1
 #   FCM_PROJECT_ID           — GCP project ID for FCM
 
-[vars]
-# Skip the completion push for stop turns shorter than this. PC hook always
-# forwards every Stop event; the threshold is enforced here so it can be
-# tuned without redeploying the hook script.
-STOP_THRESHOLD_MS = "180000"
+# Notification timing (ask delay, stop threshold) is sourced from the D1
+# `settings` table (migration 0012). The phone's Settings screen tunes them
+# at runtime — no env var needed. STOP_THRESHOLD_MS is still read by
+# readSettings() as a legacy fallback if the table is missing.

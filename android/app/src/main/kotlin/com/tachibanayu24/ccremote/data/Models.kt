@@ -99,3 +99,16 @@ data class SessionDetailResponse(
     val pending_approvals: List<PendingApproval> = emptyList(),
     val queued_prompts: List<QueuedPrompt> = emptyList(),
 )
+
+@Serializable
+data class NotificationSettings(
+    val ask_delay_ms: Long,
+    val stop_threshold_ms: Long,
+    val updated_at: Long = 0L,
+)
+
+@Serializable
+data class NotificationSettingsUpdate(
+    val ask_delay_ms: Long? = null,
+    val stop_threshold_ms: Long? = null,
+)

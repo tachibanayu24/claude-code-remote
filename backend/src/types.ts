@@ -117,3 +117,14 @@ export interface ApprovalRow {
   resolved_by: string | null
   add_to_allowlist: number | boolean
 }
+
+export interface SettingsRow {
+  ask_delay_ms: number
+  stop_threshold_ms: number
+  updated_at: number
+}
+
+export interface SettingsUpdateRequest {
+  ask_delay_ms?: number
+  stop_threshold_ms?: number
+}

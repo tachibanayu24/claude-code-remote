@@ -11,6 +11,7 @@ import com.tachibanayu24.ccremote.BuildConfig
 import com.tachibanayu24.ccremote.data.BackendClientHolder
 import com.tachibanayu24.ccremote.data.Config
 import com.tachibanayu24.ccremote.data.ConfigStore
+import com.tachibanayu24.ccremote.data.NotificationSettings
 import com.tachibanayu24.ccremote.data.Session
 import com.tachibanayu24.ccremote.data.SessionDetailResponse
 import com.tachibanayu24.ccremote.widget.WidgetSyncWorker
@@ -40,6 +41,9 @@ data class UiState(
     val saveError: String? = null,
     val fcmToken: String? = null,
     val selectedDetail: SessionDetailResponse? = null,
+    val notificationSettings: NotificationSettings? = null,
+    val isSavingSettings: Boolean = false,
+    val settingsError: String? = null,
 )
 
 class MainViewModel(private val app: Application) : AndroidViewModel(app) {
@@ -116,12 +120,43 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun openSettings() {
-        _uiState.update { it.copy(screen = Screen.Settings) }
+        _uiState.update { it.copy(screen = Screen.Settings, settingsError = null) }
+        viewModelScope.launch {
+            val client = BackendClientHolder.current() ?: return@launch
+            val fetched = client.fetchSettings() ?: return@launch
+            _uiState.update { it.copy(notificationSettings = fetched) }
+        }
     }
 
     fun closeSettings() {
         if (_uiState.value.screen !is Screen.Settings) return
-        _uiState.update { it.copy(screen = Screen.Home, saveError = null) }
+        _uiState.update { it.copy(screen = Screen.Home, saveError = null, settingsError = null) }
+    }
+
+    /**
+     * Persist notification timing knobs. UI hands us seconds; backend stores
+     * milliseconds. Negative or absurdly large values are caught by the
+     * backend's range check — we still show the resulting error to the user.
+     */
+    fun saveNotificationSettings(askDelaySec: Long, stopThresholdSec: Long) {
+        if (_uiState.value.isSavingSettings) return
+        viewModelScope.launch {
+            val client = BackendClientHolder.current() ?: return@launch
+            _uiState.update { it.copy(isSavingSettings = true, settingsError = null) }
+            try {
+                val updated = client.updateSettings(
+                    askDelayMs = askDelaySec * 1000,
+                    stopThresholdMs = stopThresholdSec * 1000,
+                )
+                if (updated == null) {
+                    _uiState.update { it.copy(settingsError = "保存に失敗") }
+                } else {
+                    _uiState.update { it.copy(notificationSettings = updated) }
+                }
+            } finally {
+                _uiState.update { it.copy(isSavingSettings = false) }
+            }
+        }
     }
 
     private fun startDetailPolling(sessionId: String) {

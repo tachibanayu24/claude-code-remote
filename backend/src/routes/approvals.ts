@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { nowSec, readJson } from '../db'
 import { notifyApprovalRequest, notifyApprovalResolved } from '../push'
+import { readSettings } from '../settings'
 import type {
   ApprovalCreateRequest,
   ApprovalRespondRequest,
@@ -23,8 +24,8 @@ app.post('/', async (c) => {
     input_preview: body.input_preview ?? '',
   })
   await c.env.DB.prepare(
-    `INSERT INTO approvals (id, session_id, cwd, project_name, tool_name, tool_input, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`
+    `INSERT INTO approvals (id, session_id, cwd, project_name, tool_name, tool_input, session_label, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
   )
     .bind(
       id,
@@ -33,9 +34,24 @@ app.post('/', async (c) => {
       body.project_name,
       body.tool_name,
       toolInput,
+      body.session_label ?? null,
       nowSec()
     )
     .run()
+
+  // Ask-delay policy: skip the immediate FCM and let channel.mjs trigger
+  // /notify after the delay. Local terminal answers within the window will
+  // dismiss the row first, so the delayed call no-ops. ask_delay_ms = 0
+  // preserves the legacy "push immediately" behavior.
+  const settings = await readSettings(c.env)
+  if (settings.ask_delay_ms > 0) {
+    return c.json({
+      id,
+      status: 'pending',
+      notified: 0,
+      notify_after_ms: settings.ask_delay_ms,
+    })
+  }
 
   const notified = await notifyApprovalRequest(c.env, c.env.DB, {
     request_id: id,
@@ -46,7 +62,44 @@ app.post('/', async (c) => {
     description: body.description ?? '',
     input_preview: body.input_preview ?? '',
   })
-  return c.json({ id, status: 'pending', notified })
+  return c.json({ id, status: 'pending', notified, notify_after_ms: 0 })
+})
+
+interface ApprovalNotifyRow {
+  status: string
+  session_id: string
+  project_name: string
+  tool_name: string
+  tool_input: string
+  session_label: string | null
+}
+
+app.post('/:id/notify', async (c) => {
+  const id = c.req.param('id')
+  const row = await c.env.DB.prepare(
+    `SELECT status, session_id, project_name, tool_name, tool_input, session_label
+     FROM approvals WHERE id = ?`
+  ).bind(id).first<ApprovalNotifyRow>()
+  if (!row) return c.json({ error: 'not found' }, 404)
+  if (row.status !== 'pending') {
+    return c.json({ ok: true, skipped: row.status })
+  }
+  let parsedInput: { description?: string; input_preview?: string } = {}
+  try {
+    parsedInput = JSON.parse(row.tool_input) ?? {}
+  } catch (_) {
+    // tool_input from older rows might not be JSON; treat as opaque.
+  }
+  const notified = await notifyApprovalRequest(c.env, c.env.DB, {
+    request_id: id,
+    session_id: row.session_id,
+    project: row.project_name,
+    session_label: row.session_label ?? '',
+    tool_name: row.tool_name,
+    description: parsedInput.description ?? '',
+    input_preview: parsedInput.input_preview ?? '',
+  })
+  return c.json({ ok: true, notified })
 })
 
 app.get('/:id', async (c) => {

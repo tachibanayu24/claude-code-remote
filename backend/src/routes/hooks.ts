@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { dismissPendingApprovals, nowSec, readJson } from '../db'
 import { basename, formatElapsed, previewLine } from '../format'
 import { notifyInfo } from '../push'
+import { readSettings } from '../settings'
 import type { Bindings, HookPosttoolRequest, HookStopRequest } from '../types'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -58,9 +59,10 @@ app.post('/stop', async (c) => {
     ])
   }
 
-  // Threshold gate: skip the FCM push for short turns. Backend-side so the PC
-  // hook doesn't need its own env knob.
-  const threshold = Number.parseInt(c.env.STOP_THRESHOLD_MS ?? '180000', 10)
+  // Threshold gate: skip the FCM push for short turns. Sourced from D1
+  // settings so the phone can tune it. readSettings falls back to env then
+  // built-in default when the table is missing.
+  const { stop_threshold_ms: threshold } = await readSettings(c.env)
   if (elapsedMs !== null && elapsedMs < threshold) {
     return c.json({ ok: true, dismissed, notified: 0, skipped: 'below_threshold', dry_run: dryRun, turn_id: dryRun ? null : turnId })
   }

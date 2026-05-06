@@ -9,6 +9,7 @@ import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.ContentType
@@ -90,6 +91,18 @@ class BackendClient(private val config: Config) {
         }
         res.status.isSuccess()
     }.getOrDefault(false)
+
+    suspend fun fetchSettings(): NotificationSettings? = runCatching {
+        val res: HttpResponse = http.get("${config.backendUrl}/v1/settings")
+        if (!res.status.isSuccess()) null else res.body<NotificationSettings>()
+    }.getOrNull()
+
+    suspend fun updateSettings(askDelayMs: Long?, stopThresholdMs: Long?): NotificationSettings? = runCatching {
+        val res: HttpResponse = http.put("${config.backendUrl}/v1/settings") {
+            setBody(NotificationSettingsUpdate(askDelayMs, stopThresholdMs))
+        }
+        if (!res.status.isSuccess()) null else res.body<NotificationSettings>()
+    }.getOrNull()
 
     suspend fun sendTestNotification(): Boolean = runCatching {
         val res: HttpResponse = http.post("${config.backendUrl}/v1/hook/stop") {

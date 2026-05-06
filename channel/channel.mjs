@@ -247,6 +247,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
   }
 
   let backendId
+  let notifyAfterMs = 0
   try {
     const res = await apiPost('/v1/approvals', {
       session_id: sessionId,
@@ -261,10 +262,24 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
       log(`backend POST failed ${request_id}: HTTP ${res.status}`)
       return
     }
-    backendId = (await res.json()).id
+    const json = await res.json()
+    backendId = json.id
+    notifyAfterMs = Number(json.notify_after_ms) || 0
   } catch (e) {
     log(`backend POST error ${request_id}: ${e.message ?? e}`)
     return
+  }
+
+  // Backend creates the row in pending state but skips the FCM push when
+  // ask_delay_ms > 0. We trigger /notify after the delay; if the local
+  // terminal dialog answers first (posttool hook → dismiss), the backend
+  // sees the row is no longer pending and no push is sent.
+  if (notifyAfterMs > 0) {
+    setTimeout(() => {
+      apiPost(`/v1/approvals/${backendId}/notify`, {})
+        .then((r) => { if (!r.ok) log(`notify POST ${request_id}: HTTP ${r.status}`) })
+        .catch((e) => log(`notify POST error ${request_id}: ${e.message ?? e}`))
+    }, notifyAfterMs).unref()
   }
 
   pollAndEmit(backendId, request_id, tool_name, input_preview, cwd).catch((e) =>

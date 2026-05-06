@@ -98,7 +98,11 @@ class MainActivity : ComponentActivity() {
                         Screen.Settings -> SettingsScreen(
                             config = current,
                             fcmToken = state.fcmToken,
+                            notificationSettings = state.notificationSettings,
+                            isSavingSettings = state.isSavingSettings,
+                            settingsError = state.settingsError,
                             onBack = vm::closeSettings,
+                            onSaveNotificationSettings = vm::saveNotificationSettings,
                             onResetConfig = vm::resetConfig,
                             onTestNotification = vm::sendTestNotification,
                         )
