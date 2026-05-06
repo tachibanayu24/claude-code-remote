@@ -97,8 +97,8 @@ private fun WidgetUi(state: WidgetState) {
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Column(modifier = GlanceModifier.fillMaxSize()) {
-            Header()
-            Spacer(GlanceModifier.size(6.dp))
+            Header(showSectionLabel = state.sessions.isNotEmpty())
+            Spacer(GlanceModifier.size(4.dp))
             if (state.sessions.isEmpty()) {
                 EmptyBody()
             } else {
@@ -109,7 +109,7 @@ private fun WidgetUi(state: WidgetState) {
 }
 
 @Composable
-private fun Header() {
+private fun Header(showSectionLabel: Boolean) {
     val context = LocalContext.current
     val openHomeIntent = Intent(context, MainActivity::class.java).apply {
         flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -125,9 +125,29 @@ private fun Header() {
             provider = ImageProvider(R.drawable.ic_clawd),
             contentDescription = "cc-remote",
             colorFilter = ColorFilter.tint(ColorProvider(Orange)),
-            modifier = GlanceModifier.size(20.dp),
+            modifier = GlanceModifier.size(36.dp),
         )
+        if (showSectionLabel) {
+            Spacer(GlanceModifier.width(10.dp))
+            SectionLabel("active")
+        }
     }
+}
+
+/**
+ * Faded `— active —` caption that sits next to the clawd in the header,
+ * mirroring the HomeScreen section separator.
+ */
+@Composable
+private fun SectionLabel(label: String) {
+    Text(
+        text = "— $label —",
+        style = TextStyle(
+            color = ColorProvider(OnBgMuted),
+            fontFamily = FontFamily.Monospace,
+            fontSize = 10.sp,
+        ),
+    )
 }
 
 @Composable
@@ -175,15 +195,26 @@ private fun SessionRow(session: WidgetSession) {
     ) {
         StateDot(session.state)
         Spacer(GlanceModifier.width(8.dp))
-        Text(
-            text = session.titleLine,
-            maxLines = 1,
-            style = TextStyle(
-                color = ColorProvider(OnBg),
-                fontFamily = FontFamily.Monospace,
-                fontSize = 13.sp,
-            ),
-        )
+        Column {
+            Text(
+                text = session.repo,
+                maxLines = 1,
+                style = TextStyle(
+                    color = ColorProvider(OnBgMuted),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                ),
+            )
+            Text(
+                text = session.title,
+                maxLines = 1,
+                style = TextStyle(
+                    color = ColorProvider(OnBg),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                ),
+            )
+        }
     }
 }
 

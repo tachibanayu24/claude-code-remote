@@ -112,15 +112,17 @@ class WidgetSyncWorker(
 }
 
 /**
- * Same `project · ai_title-or-#id6` shape that HomeScreen uses, so the widget
- * row reads identically to the corresponding row in the app.
+ * Split into repo + title so the widget can render two lines: a muted repo
+ * caption above a primary title (ai_title when CC has named the session,
+ * else the same `#abcd1f` shorthand the app uses elsewhere).
  */
 private fun Session.toWidgetSession(): WidgetSession {
-    val discriminator = ai_title?.takeIf { it.isNotBlank() }
+    val title = ai_title?.takeIf { it.isNotBlank() }
         ?: "#" + session_id.takeLast(6)
     return WidgetSession(
         sessionId = session_id,
-        titleLine = "$project_name · $discriminator",
+        repo = project_name,
+        title = title,
         state = state,
     )
 }

@@ -21,7 +21,10 @@ data class WidgetState(
 @Serializable
 data class WidgetSession(
     val sessionId: String,
-    val titleLine: String,
+    /** Repo / project name. Rendered small + muted on the first line. */
+    val repo: String,
+    /** ai_title or `#id6` fallback. Rendered as the primary label. */
+    val title: String,
     /** working | awaiting_approval | idle (closed is filtered out upstream) */
     val state: String,
 )
