@@ -10,7 +10,10 @@ import type { Bindings, SessionHeartbeatRequest, SessionRow, TurnRow } from '../
 
 const app = new Hono<{ Bindings: Bindings }>()
 
-const SESSION_HEARTBEAT_TTL_SEC = 30
+// channel.mjs heartbeats via /v1/wait at 5–15s cadence (plus exponential
+// backoff up to 30s on errors). 90s gives ~3x headroom — beyond that the
+// channel is genuinely unreachable and the session should be marked closed.
+const SESSION_HEARTBEAT_TTL_SEC = 90
 const TURNS_DEFAULT_LIMIT = 20
 const TURNS_MAX_LIMIT = 50
 // Window during which delivered prompts are still surfaced to the detail

@@ -28,16 +28,18 @@ import {
   lastUserPromptFromJsonl,
 } from '../hooks/lib/jsonl.mjs'
 
-const POLL_INTERVAL_MS = 1000
-const POLL_TIMEOUT_MS = 5 * 60 * 1000
+const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
 const SESSION_LABEL_TTL_MS = 5_000
-// Heartbeat cadence is adaptive: tight while a turn is in flight (so the
-// phone's chat stream feels live), relaxed while idle (no new data anyway,
-// just liveness). At idle we only need to refresh `last_heartbeat` inside
-// SESSION_HEARTBEAT_TTL_SEC (30s on backend) to avoid being marked closed.
-const HEARTBEAT_INFLIGHT_MS = 1_500
-const HEARTBEAT_IDLE_MS = 5_000
-const PROMPT_POLL_INTERVAL_MS = 2_000
+// Long-poll cadence for /v1/wait. The same request also carries the
+// heartbeat snapshot, so wait cadence == heartbeat cadence. Inflight uses a
+// shorter hold so the phone sees `current_assistant_text` updates with ~5s
+// lag; idle holds longer to keep request count down (CF Workers Free is
+// 100k req/day).
+const WAIT_INFLIGHT_MAX_MS = 5_000
+const WAIT_IDLE_MAX_MS = 15_000
+// Network-level timeout: server-side cap + slack for transit + retry hop.
+const WAIT_REQUEST_TIMEOUT_BUFFER_MS = 5_000
+const WAIT_BACKOFF_MAX_MS = 30_000
 
 // Make sure relative imports work even when this file is invoked via symlink.
 // (Not strictly needed today since we use `import` paths, but useful guard.)
@@ -70,10 +72,6 @@ async function apiPost(path, payload, signal) {
     body: JSON.stringify(payload),
     signal,
   })
-}
-
-async function apiGet(path, signal) {
-  return fetch(`${BACKEND}${path}`, { headers: apiHeaders, signal })
 }
 
 // ---------- Session lookup (sessionId / ai-title / jsonl mtime) ----------
@@ -282,159 +280,182 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     }, notifyAfterMs).unref()
   }
 
-  pollAndEmit(backendId, request_id, tool_name, input_preview, cwd).catch((e) =>
-    log(`poll error ${request_id}: ${e.message ?? e}`),
-  )
+  pendingApprovals.set(backendId, {
+    ccRequestId: request_id,
+    toolName: tool_name,
+    inputPreview: input_preview,
+    cwd,
+    expiresAt: Date.now() + APPROVAL_TIMEOUT_MS,
+  })
 })
 
-async function pollAndEmit(backendId, ccRequestId, toolName, inputPreview, cwd) {
-  const start = Date.now()
-  while (Date.now() - start < POLL_TIMEOUT_MS) {
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
+// ---------- /v1/wait long-poll loop ----------
+
+/**
+ * Pending permission requests this channel is waiting for verdicts on.
+ * Keyed by backend approval id (what /v1/wait echoes back as `request_id`).
+ * Entries are removed on successful verdict emit, or swept after
+ * APPROVAL_TIMEOUT_MS so /v1/wait isn't asked to track ids forever.
+ */
+const pendingApprovals = new Map()
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+function sweepExpiredPending() {
+  const now = Date.now()
+  for (const [backendId, entry] of pendingApprovals) {
+    if (entry.expiresAt <= now) {
+      log(`timeout ${entry.ccRequestId} — local dialog will handle`)
+      pendingApprovals.delete(backendId)
+    }
+  }
+}
+
+/**
+ * Single long-poll loop replacing the old heartbeat + prompt-drain +
+ * verdict-poll trio. Each /v1/wait round:
+ *   1. Upserts the heartbeat snapshot (the request body == the heartbeat).
+ *   2. Returns immediately if any queued prompt or pending verdict is ready.
+ *   3. Otherwise holds for max_ms (server-side capped at 25s) and returns
+ *      empty.
+ * Inflight rounds use a shorter hold so the phone sees live progress with
+ * ~5s lag; idle rounds hold longer to amortize request count over the
+ * Workers Free 100k req/day budget.
+ */
+async function waitLoop() {
+  let backoffMs = 1_000
+  while (true) {
+    if (!BACKEND || !SECRET) {
+      await sleep(WAIT_BACKOFF_MAX_MS)
+      continue
+    }
+    sweepExpiredPending()
+    const snapshot = inspectSession()
+    if (!snapshot.session_id) {
+      // Older CC builds without ppid file land here — nothing to do but wait.
+      await sleep(2_000)
+      continue
+    }
+    const inflight = snapshot.current_prompt != null
+    const maxMs = inflight ? WAIT_INFLIGHT_MAX_MS : WAIT_IDLE_MAX_MS
+    const body = {
+      session_id: snapshot.session_id,
+      cwd: snapshot.cwd,
+      ai_title: snapshot.ai_title,
+      jsonl_mtime: snapshot.jsonl_mtime,
+      current_prompt: snapshot.current_prompt,
+      current_assistant_text: snapshot.current_assistant_text,
+      pending_request_ids: [...pendingApprovals.keys()],
+    }
     let data
     try {
-      // Cap each poll to slightly less than the interval so a hung connection
-      // can't stack up waiting requests across iterations.
-      const r = await apiGet(`/v1/approvals/${backendId}`, AbortSignal.timeout(POLL_INTERVAL_MS - 100))
-      if (!r.ok) continue
+      const r = await apiPost(
+        `/v1/wait?max_ms=${maxMs}`,
+        body,
+        AbortSignal.timeout(maxMs + WAIT_REQUEST_TIMEOUT_BUFFER_MS),
+      )
+      if (!r.ok) {
+        log(`/v1/wait HTTP ${r.status}`)
+        await sleep(backoffMs)
+        backoffMs = Math.min(backoffMs * 2, WAIT_BACKOFF_MAX_MS)
+        continue
+      }
       data = await r.json()
-    } catch (_) {
+      backoffMs = 1_000
+    } catch (e) {
+      log(`/v1/wait error: ${e.message ?? e}`)
+      await sleep(backoffMs)
+      backoffMs = Math.min(backoffMs * 2, WAIT_BACKOFF_MAX_MS)
       continue
     }
-    if (!data || data.status === 'pending') continue
-
-    if (data.status !== 'allow' && data.status !== 'deny') {
-      log(`stopped polling ${ccRequestId} (status=${data.status})`)
-      return
-    }
-
-    if (data.status === 'allow' && data.add_to_allowlist) {
-      const pattern = deriveAllowPattern(toolName, inputPreview)
-      if (pattern) {
-        try {
-          const added = appendAllowPattern(cwd, pattern)
-          log(added ? `allowlisted ${pattern}` : `allowlist already had ${pattern}`)
-        } catch (e) {
-          log(`allowlist write failed: ${e.message ?? e}`)
-        }
-      } else {
-        log(`add_to_allowlist set but no pattern derivable for ${toolName}`)
+    for (const ev of data.events ?? []) {
+      try {
+        if (ev.type === 'prompt') await handlePromptEvent(ev)
+        else if (ev.type === 'verdict') await handleVerdictEvent(ev)
+      } catch (e) {
+        log(`event handler error: ${e.message ?? e}`)
       }
     }
+  }
+}
 
-    try {
-      await mcp.notification({
-        method: 'notifications/claude/channel/permission',
-        params: { request_id: ccRequestId, behavior: data.status },
-      })
-      log(`emitted verdict ${ccRequestId}=${data.status}`)
-    } catch (e) {
-      log(`emit failed ${ccRequestId}: ${e.message ?? e}`)
-    }
+/**
+ * Claim-then-emit so multi-CC-on-same-session races stay safe: only the
+ * channel that wins `/v1/prompts/:id/delivered` actually injects. If we win
+ * the claim but the MCP emit fails, the prompt is lost rather than
+ * duplicated — log loudly so the user can resend.
+ */
+async function handlePromptEvent(ev) {
+  let claimed = false
+  try {
+    const r = await apiPost(`/v1/prompts/${ev.id}/delivered`, {})
+    claimed = r.ok
+  } catch (e) {
+    log(`prompt claim failed ${ev.id}: ${e.message ?? e}`)
     return
   }
-  log(`timeout ${ccRequestId} — local dialog will handle`)
-}
-
-// ---------- Session heartbeat ----------
-
-/**
- * Tell backend we're alive. Backend derives `working` / `idle` / `closed`
- * from `last_heartbeat` + `jsonl_mtime`, so the only state we have to
- * publish is "I exist + here is my latest jsonl mtime". When CC dies, this
- * subprocess dies with it and the next `GET /v1/sessions` will see a stale
- * heartbeat and mark us closed.
- *
- * Returns true when a turn is in flight (current_prompt != null) so the
- * scheduler knows whether to follow up at the inflight or idle cadence.
- */
-async function sendHeartbeat() {
-  if (!BACKEND || !SECRET) return false
-  const snapshot = inspectSession()
-  // Backend's sessions table is keyed by session_id now; without one there's
-  // nothing to upsert. Skip silently — channel.mjs spawned by older CC that
-  // doesn't write the ppid file would otherwise spam 400s.
-  if (!snapshot.session_id) return false
+  if (!claimed) return  // another channel got it; they'll emit
   try {
-    await apiPost('/v1/sessions/heartbeat', snapshot)
+    await mcp.notification({
+      method: 'notifications/claude/channel',
+      params: { content: ev.text, meta: { source: 'phone', prompt_id: ev.id } },
+    })
+    // Echo full text — CC's banner truncates long prompts.
+    log(`injected prompt ${ev.id}:\n${ev.text}`)
   } catch (e) {
-    log(`heartbeat failed: ${e.message ?? e}`)
+    log(`prompt emit failed AFTER claim ${ev.id}: ${e.message ?? e}`)
   }
-  return snapshot.current_prompt != null
 }
 
 /**
- * Self-rescheduling heartbeat loop. setTimeout instead of setInterval so the
- * next interval can be picked based on whether we're in-flight or idle —
- * D1 writes scale with cadence, and being tight only when it matters keeps
- * us comfortably under the free-tier write budget.
+ * Verdict came back from the phone (via /v1/wait dispatch). Apply allowlist
+ * side-effect first, then emit the permission notification, then forget the
+ * pending entry. If the emit fails we keep it pending so the next /v1/wait
+ * round redelivers the same verdict.
  */
-function scheduleHeartbeat(delay) {
-  setTimeout(async () => {
-    const inflight = await sendHeartbeat()
-    scheduleHeartbeat(inflight ? HEARTBEAT_INFLIGHT_MS : HEARTBEAT_IDLE_MS)
-  }, delay).unref()
-}
-
-// ---------- Prompt drain (phone → CC injection) ----------
-
-/**
- * Drain queued prompts the user enqueued from the Android app and emit them
- * into the running CC session as `notifications/claude/channel` events —
- * Claude treats these as the next user turn.
- *
- * Claim-then-emit ordering: the `delivered` endpoint conditionally updates
- * `WHERE status = 'queued'`, so it returns 200 only for the channel that
- * wins the race when multiple CC sessions share a cwd. We only emit after
- * winning the claim, which prevents double-injection in the rare
- * multi-session case.
- */
-async function drainPrompts() {
-  if (!BACKEND || !SECRET) return
-  const sess = readPpidSession()
-  if (!sess?.sessionId) return  // queue is keyed by session_id
-  const path = `/v1/sessions/${encodeURIComponent(sess.sessionId)}/prompts/queued`
-  let prompts = []
-  try {
-    const r = await apiGet(path)
-    if (!r.ok) return
-    prompts = (await r.json()).prompts ?? []
-  } catch (e) {
-    log(`prompt drain fetch failed: ${e.message ?? e}`)
+async function handleVerdictEvent(ev) {
+  const entry = pendingApprovals.get(ev.request_id)
+  if (!entry) return  // unknown id (already handled or swept)
+  if (ev.behavior !== 'allow' && ev.behavior !== 'deny') {
+    log(`unexpected verdict behavior=${ev.behavior} for ${entry.ccRequestId}`)
+    pendingApprovals.delete(ev.request_id)
     return
   }
-  for (const p of prompts) {
-    let claimed = false
-    try {
-      const r = await apiPost(`/v1/prompts/${p.id}/delivered`, {})
-      claimed = r.ok
-    } catch (e) {
-      log(`prompt claim failed ${p.id}: ${e.message ?? e}`)
-      continue
+  if (ev.behavior === 'allow' && ev.add_to_allowlist) {
+    const pattern = deriveAllowPattern(entry.toolName, entry.inputPreview)
+    if (pattern) {
+      try {
+        const added = appendAllowPattern(entry.cwd, pattern)
+        log(added ? `allowlisted ${pattern}` : `allowlist already had ${pattern}`)
+      } catch (e) {
+        log(`allowlist write failed: ${e.message ?? e}`)
+      }
+    } else {
+      log(`add_to_allowlist set but no pattern derivable for ${entry.toolName}`)
     }
-    if (!claimed) continue  // another channel won the race; let them emit it
-    try {
-      await mcp.notification({
-        method: 'notifications/claude/channel',
-        params: { content: p.text, meta: { source: 'phone', prompt_id: p.id } },
-      })
-      // Echo the full prompt text on stderr so the CLI surfaces the entire
-      // content (CC's own channel-banner display truncates long prompts).
-      log(`injected prompt ${p.id}:\n${p.text}`)
-    } catch (e) {
-      // We've already acked: the prompt is lost rather than duplicated. Log
-      // loudly so the user can retry from the app.
-      log(`prompt emit failed AFTER claim ${p.id}: ${e.message ?? e}`)
-    }
+  }
+  try {
+    await mcp.notification({
+      method: 'notifications/claude/channel/permission',
+      params: { request_id: entry.ccRequestId, behavior: ev.behavior },
+    })
+    log(`emitted verdict ${entry.ccRequestId}=${ev.behavior}`)
+    pendingApprovals.delete(ev.request_id)
+  } catch (e) {
+    // keep entry in pendingApprovals; next wait round will redeliver
+    log(`emit failed ${entry.ccRequestId}: ${e.message ?? e}`)
   }
 }
 
 await mcp.connect(new StdioServerTransport())
 log(`connected (backend=${BACKEND ? 'configured' : 'missing'})`)
 
-// Kick off immediately; the loop self-paces from the first response.
-sendHeartbeat().then((inflight) =>
-  scheduleHeartbeat(inflight ? HEARTBEAT_INFLIGHT_MS : HEARTBEAT_IDLE_MS),
-)
-// .unref() so an exiting CC parent isn't kept alive by these timers.
-setInterval(drainPrompts, PROMPT_POLL_INTERVAL_MS).unref()
+// When CC parent dies, stdin closes. Exit so we don't keep the long-poll
+// fetch alive past our usefulness.
+process.stdin.on('end', () => process.exit(0))
+process.stdin.on('close', () => process.exit(0))
+
+waitLoop().catch((e) => {
+  log(`waitLoop fatal: ${e.message ?? e}`)
+  process.exit(1)
+})

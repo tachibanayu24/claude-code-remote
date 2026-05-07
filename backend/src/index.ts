@@ -6,6 +6,7 @@ import hooks from './routes/hooks'
 import prompts from './routes/prompts'
 import sessions from './routes/sessions'
 import settings from './routes/settings'
+import wait from './routes/wait'
 import type { Bindings } from './types'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -19,6 +20,7 @@ app.route('/v1/approvals', approvals)
 app.route('/v1/hook', hooks)
 app.route('/v1/sessions', sessions)
 app.route('/v1/settings', settings)
+app.route('/v1/wait', wait)
 // `prompts` declares both `/sessions/:sid/prompts*` and `/prompts/:id/...`
 // shapes, so it mounts at the v1 root rather than under a sub-prefix.
 app.route('/v1', prompts)

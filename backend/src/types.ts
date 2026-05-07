@@ -118,6 +118,20 @@ export interface ApprovalRow {
   add_to_allowlist: number | boolean
 }
 
+export interface WaitRequest {
+  session_id: string
+  cwd: string
+  ai_title?: string | null
+  jsonl_mtime?: number | null
+  current_prompt?: string | null
+  current_assistant_text?: string | null
+  pending_request_ids?: string[]
+}
+
+export type WaitEvent =
+  | { type: 'prompt'; id: string; text: string }
+  | { type: 'verdict'; request_id: string; behavior: 'allow' | 'deny'; add_to_allowlist: boolean }
+
 export interface SettingsRow {
   ask_delay_ms: number
   stop_threshold_ms: number
