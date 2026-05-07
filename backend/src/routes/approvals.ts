@@ -5,7 +5,6 @@ import { readSettings } from '../settings'
 import type {
   ApprovalCreateRequest,
   ApprovalRespondRequest,
-  ApprovalRow,
   Bindings,
 } from '../types'
 
@@ -100,22 +99,6 @@ app.post('/:id/notify', async (c) => {
     input_preview: parsedInput.input_preview ?? '',
   })
   return c.json({ ok: true, notified })
-})
-
-app.get('/:id', async (c) => {
-  const row = await c.env.DB.prepare(
-    `SELECT id, status, resolved_at, resolved_by, add_to_allowlist
-     FROM approvals WHERE id = ?`
-  )
-    .bind(c.req.param('id'))
-    .first<ApprovalRow>()
-  if (!row) return c.json({ error: 'not found' }, 404)
-  return c.json({
-    ...row,
-    // D1 may decode INTEGER as either number or boolean depending on driver
-    // version. Normalize so downstream callers see a stable boolean.
-    add_to_allowlist: Number(row.add_to_allowlist) === 1,
-  })
 })
 
 app.post('/:id/respond', async (c) => {

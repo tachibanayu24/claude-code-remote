@@ -2,12 +2,17 @@
 // claude-code-remote channel server.
 // Receives Claude Code permission_request notifications, forwards them to the
 // Cloudflare Workers backend (which fans out FCM pushes to registered Android
-// devices), polls for the verdict, and emits permission notifications back to
-// Claude Code. The local terminal dialog stays open in parallel; whichever
-// side answers first wins (Channels protocol applies the first verdict and
-// drops the rest). When the phone responds with `add_to_allowlist`, the
-// matching tool pattern is appended to the project-level
-// `.claude/settings.local.json` so future invocations skip the prompt.
+// devices), and long-polls `/v1/wait` for verdicts + queued prompts. The
+// same `/v1/wait` request body doubles as the heartbeat upsert (session
+// state snapshot), so one round-trip covers all three flows: permission
+// relay, prompt inject, and live progress.
+//
+// The local terminal dialog stays open in parallel with the phone push;
+// whichever side answers first wins (Channels protocol applies the first
+// verdict and drops the rest). When the phone responds with
+// `add_to_allowlist`, the matching tool pattern is appended to the
+// project-level `.claude/settings.local.json` so future invocations skip
+// the prompt.
 //
 // All jsonl parsing lives in `../hooks/lib/jsonl.mjs`, shared with the Stop
 // hook so both layers stay in sync.

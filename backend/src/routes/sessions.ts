@@ -1,12 +1,6 @@
 import { Hono } from 'hono'
-import {
-  cleanupOldTurns,
-  cleanupStaleSessions,
-  nowSec,
-  readJson,
-} from '../db'
-import { basename } from '../format'
-import type { Bindings, SessionHeartbeatRequest, SessionRow, TurnRow } from '../types'
+import { cleanupOldTurns, cleanupStaleSessions, nowSec } from '../db'
+import type { Bindings, SessionRow, TurnRow } from '../types'
 
 const app = new Hono<{ Bindings: Bindings }>()
 
@@ -18,10 +12,9 @@ const TURNS_DEFAULT_LIMIT = 20
 const TURNS_MAX_LIMIT = 50
 // Window during which delivered prompts are still surfaced to the detail
 // screen, so the queued bubble doesn't flicker off in the gap between
-// channel.mjs claim and the heartbeat that picks the prompt up as
-// `current_prompt` (whether via `type:"user"` or `type:"attachment"`
-// queued_command). One heartbeat (3s) + a couple of safety ticks is plenty;
-// any longer and the bubble lingers as a duplicate of the in-flight one.
+// channel.mjs claim and the next /v1/wait round (which carries the heartbeat
+// upserting `current_prompt`). 15s ≈ 3 inflight wait cycles (5s) — long
+// enough to outlast jitter, short enough not to leave a stale duplicate.
 const RECENT_DELIVERED_TTL_SEC = 15
 
 function parseJsonArray<T>(raw: string | null, label: string): T[] {
@@ -34,41 +27,6 @@ function parseJsonArray<T>(raw: string | null, label: string): T[] {
     return []
   }
 }
-
-app.post('/heartbeat', async (c) => {
-  const body = await readJson<SessionHeartbeatRequest>(c.req.raw)
-  if (!body?.session_id || !body.cwd) {
-    return c.json({ error: 'session_id and cwd required' }, 400)
-  }
-  const project = basename(body.cwd) || 'unknown'
-  const now = nowSec()
-  await c.env.DB.prepare(
-    `INSERT INTO sessions (session_id, cwd, project_name, ai_title, jsonl_mtime, last_heartbeat, updated_at, current_prompt, current_assistant_text)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(session_id) DO UPDATE SET
-       cwd = excluded.cwd,
-       project_name = excluded.project_name,
-       ai_title = COALESCE(excluded.ai_title, sessions.ai_title),
-       jsonl_mtime = excluded.jsonl_mtime,
-       last_heartbeat = excluded.last_heartbeat,
-       updated_at = excluded.updated_at,
-       current_prompt = excluded.current_prompt,
-       current_assistant_text = excluded.current_assistant_text`
-  )
-    .bind(
-      body.session_id,
-      body.cwd,
-      project,
-      body.ai_title ?? null,
-      body.jsonl_mtime ?? null,
-      now,
-      now,
-      body.current_prompt ?? null,
-      body.current_assistant_text ?? null,
-    )
-    .run()
-  return c.json({ ok: true })
-})
 
 app.get('/', async (c) => {
   // Cleanup is fire-and-forget so the GET stays semantically read-only from

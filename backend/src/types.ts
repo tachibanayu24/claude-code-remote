@@ -62,20 +62,6 @@ export interface HookPosttoolRequest {
   cwd: string
 }
 
-export interface SessionHeartbeatRequest {
-  session_id: string  // required — keying changed from cwd to session_id
-  cwd: string
-  ai_title?: string
-  jsonl_mtime?: number  // ms epoch
-  // Snapshot of the in-flight turn, refreshed every heartbeat. Both fields are
-  // unconditionally written (undefined and null both store NULL) — channel.mjs
-  // is expected to send the current jsonl-derived value (or null when no turn
-  // is in flight). Callers that want to "preserve" must read the current value
-  // and re-send it.
-  current_prompt?: string | null
-  current_assistant_text?: string | null
-}
-
 export interface SessionRow {
   session_id: string
   cwd: string
@@ -99,23 +85,6 @@ export interface TurnRow {
 
 export interface PromptCreateRequest {
   text: string
-}
-
-export interface PromptRow {
-  id: string
-  session_id: string
-  cwd: string
-  text: string
-  status: 'queued' | 'delivered'
-  created_at: number
-}
-
-export interface ApprovalRow {
-  id: string
-  status: string
-  resolved_at: number | null
-  resolved_by: string | null
-  add_to_allowlist: number | boolean
 }
 
 export interface WaitRequest {

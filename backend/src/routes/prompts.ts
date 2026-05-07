@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { nowSec, readJson } from '../db'
-import type { Bindings, PromptCreateRequest, PromptRow } from '../types'
+import type { Bindings, PromptCreateRequest } from '../types'
 
 const app = new Hono<{ Bindings: Bindings }>()
 
@@ -22,16 +22,6 @@ app.post('/sessions/:sid/prompts', async (c) => {
      VALUES (?, ?, ?, ?, 'queued', ?)`
   ).bind(id, sid, session.cwd, text, nowSec()).run()
   return c.json({ ok: true, id })
-})
-
-app.get('/sessions/:sid/prompts/queued', async (c) => {
-  const sid = c.req.param('sid')
-  if (!sid) return c.json({ error: 'session_id required' }, 400)
-  const res = await c.env.DB.prepare(
-    `SELECT id, session_id, cwd, text, status, created_at FROM prompts
-     WHERE session_id = ? AND status = 'queued' ORDER BY created_at ASC`
-  ).bind(sid).all<PromptRow>()
-  return c.json({ prompts: res.results ?? [] })
 })
 
 app.post('/prompts/:id/delivered', async (c) => {
