@@ -150,7 +150,15 @@ export async function sendFcm(
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ message }),
+    // data-only メッセージは Android で normal priority がデフォルト → Doze 中は
+    // バッチ遅延され、アプリを開くまで届かない事象が起きる。HIGH に上げて
+    // 端末を wake させ、kill 状態の MessagingService も叩く。
+    body: JSON.stringify({
+      message: {
+        ...message,
+        android: { priority: 'high' },
+      },
+    }),
   })
   if (res.ok) return
   const err = await res.text()
