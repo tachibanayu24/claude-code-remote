@@ -1,5 +1,9 @@
 package com.tachibanayu24.ccremote.ui
 
+import android.content.Intent
+import android.speech.RecognizerIntent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -28,6 +32,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -61,12 +66,15 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.tachibanayu24.ccremote.data.ApprovalCommandFormatter
+import com.tachibanayu24.ccremote.data.Block
 import com.tachibanayu24.ccremote.data.PendingApproval
 import com.tachibanayu24.ccremote.data.QueuedPrompt
 import com.tachibanayu24.ccremote.data.SessionDetailResponse
+import com.tachibanayu24.ccremote.data.ToolCall
 import com.tachibanayu24.ccremote.data.ToolUsage
 import com.tachibanayu24.ccremote.data.Turn
 import kotlinx.coroutines.delay
+import kotlinx.serialization.json.JsonObject
 
 private val InFlightAccent = Color(0xFF4ADE80)
 private val PendingAccent = Color(0xFFFACC15)
@@ -108,7 +116,7 @@ fun SessionDetailScreen(
         val turns = remember(detail) { detail?.turns?.asReversed().orEmpty() }
         val pendingApprovals = detail?.pending_approvals.orEmpty()
         val currentPrompt = detail?.session?.current_prompt?.takeIf { it.isNotBlank() }
-        val currentAssistantText = detail?.session?.current_assistant_text?.takeIf { it.isNotBlank() }
+        val currentBlocks = detail?.session?.current_blocks.orEmpty()
         val hasInFlight = currentPrompt != null
         // Backend also returns recently-delivered prompts so the queued bubble
         // doesn't flicker off during the gap between channel.mjs ack and the
@@ -135,8 +143,15 @@ fun SessionDetailScreen(
             (if (hasInFlight) 1 else 0) +
             queuedPrompts.size +
             pendingApprovals.size
-        val assistantLen = currentAssistantText?.length ?: 0
-        LaunchedEffect(itemCount, assistantLen) {
+        // Track total characters across all blocks so in-flight streaming
+        // (text appended one chunk at a time) triggers the auto-scroll.
+        val liveLen = currentBlocks.sumOf {
+            when (it.kind) {
+                "text" -> it.text?.length ?: 0
+                else -> 1
+            }
+        }
+        LaunchedEffect(itemCount, liveLen) {
             if (itemCount > 0) {
                 listState.scrollToItem(itemCount - 1, scrollOffset = Int.MAX_VALUE)
             }
@@ -177,7 +192,7 @@ fun SessionDetailScreen(
                     items(turns, key = { it.id }) { TurnBlock(it) }
                     if (hasInFlight) {
                         item(key = "in-flight") {
-                            InFlightBlock(prompt = currentPrompt!!, assistantText = currentAssistantText)
+                            InFlightBlock(prompt = currentPrompt!!, blocks = currentBlocks)
                         }
                     }
                     items(queuedPrompts, key = { "queued-${it.id}" }) { p -> QueuedPromptBlock(p) }
@@ -242,37 +257,20 @@ private fun TopBar(
 @Composable
 private fun TurnBlock(turn: Turn) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        // Prompt + narration share a SelectionContainer so a single long-
-        // press-and-drag can span the user prompt and the assistant reply.
-        // tool_calls bring their own SelectionContainers (CodeBlock /
-        // DiffView) so code/diff is selectable independently.
-        if (!turn.user_prompt.isNullOrBlank() || !turn.assistant_text.isNullOrBlank()) {
+        if (!turn.user_prompt.isNullOrBlank()) {
             SelectionContainer {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (!turn.user_prompt.isNullOrBlank()) {
-                        Text(
-                            text = "▷ ${turn.user_prompt}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontFamily = FontFamily.Monospace,
-                        )
-                    }
-                    if (!turn.assistant_text.isNullOrBlank()) {
-                        ChatMarkdown(
-                            text = turn.assistant_text,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                }
+                Text(
+                    text = "▷ ${turn.user_prompt}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontFamily = FontFamily.Monospace,
+                )
             }
         }
-        // Inline tool_calls: lightweight kinds compact to one line, Edit/
-        // MultiEdit/Write open into a 6-line preview + tap-to-expand diff.
-        // Key includes turn.id so each turn's expand state is independent
-        // and survives saved-state restoration.
-        turn.tool_calls.forEachIndexed { idx, call ->
-            ToolCallBlock(call = call, key = "${turn.id}#${idx}")
-        }
+        // Render blocks in the exact order they appeared in CC's jsonl, so a
+        // narration → Edit → narration → Bash sequence shows interleaved
+        // (matching the CLI), not "all text first, all tools last".
+        BlockList(blocks = turn.blocks, keyPrefix = turn.id)
         val footer = footerLine(turn)
         if (footer.isNotBlank()) {
             Text(
@@ -285,8 +283,39 @@ private fun TurnBlock(turn: Turn) {
     }
 }
 
+/**
+ * Render an ordered list of narration / tool_use blocks. Text blocks share
+ * an outer SelectionContainer so a multi-block highlight gesture works; each
+ * tool_use block carries its own inner selection (CodeBlock / DiffView).
+ */
 @Composable
-private fun InFlightBlock(prompt: String, assistantText: String?) {
+private fun BlockList(blocks: List<Block>, keyPrefix: String) {
+    blocks.forEachIndexed { idx, b ->
+        when (b.kind) {
+            "text" -> {
+                val text = b.text
+                if (!text.isNullOrBlank()) {
+                    SelectionContainer {
+                        ChatMarkdown(
+                            text = text,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+            "tool_use" -> {
+                val call = ToolCall(
+                    name = b.name ?: "",
+                    input = b.input ?: JsonObject(emptyMap()),
+                )
+                ToolCallBlock(call = call, key = "${keyPrefix}#$idx")
+            }
+        }
+    }
+}
+
+@Composable
+private fun InFlightBlock(prompt: String, blocks: List<Block>) {
     val transition = rememberInfiniteTransition(label = "in-flight-pulse")
     val pulseAlpha by transition.animateFloat(
         initialValue = 0.4f,
@@ -299,21 +328,17 @@ private fun InFlightBlock(prompt: String, assistantText: String?) {
     )
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SelectionContainer {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "▷ $prompt",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontFamily = FontFamily.Monospace,
-                )
-                if (!assistantText.isNullOrBlank()) {
-                    ChatMarkdown(
-                        text = assistantText,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-            }
+            Text(
+                text = "▷ $prompt",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontFamily = FontFamily.Monospace,
+            )
         }
+        // Live blocks reuse the same ordered renderer as committed turns so
+        // in-flight Bash invocations / Edits are visible mid-turn, not just
+        // the partial narration.
+        BlockList(blocks = blocks, keyPrefix = "in-flight")
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
@@ -433,22 +458,24 @@ private fun PendingApprovalBlock(
                             contentDescription = "${approval.tool_name} を許可"
                         },
                 ) { Text("Allow") }
-                Button(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onDecide(approval.id, "allow", true)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .semantics {
-                            role = Role.Button
-                            contentDescription = "${approval.tool_name} を常に許可"
+                if (approval.supports_always) {
+                    Button(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onDecide(approval.id, "allow", true)
                         },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.tertiary,
-                        contentColor = MaterialTheme.colorScheme.onTertiary,
-                    ),
-                ) { Text("Always") }
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics {
+                                role = Role.Button
+                                contentDescription = "${approval.tool_name} を常に許可"
+                            },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.tertiary,
+                            contentColor = MaterialTheme.colorScheme.onTertiary,
+                        ),
+                    ) { Text("Always") }
+                }
                 OutlinedButton(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -474,6 +501,19 @@ private fun PromptInputBar(
 ) {
     val haptic = LocalHapticFeedback.current
     var text by remember { mutableStateOf("") }
+    // 端末標準の音声認識 Activity を起動して結果テキストを取得する。
+    // RECORD_AUDIO 権限は不要 (system UI が持つ)、結果は文字列として戻る。
+    val voiceLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val spoken = result.data
+            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: return@rememberLauncherForActivityResult
+        // 既存テキストに半角スペース区切りで追記。空欄ならそのまま差し替え。
+        text = if (text.isBlank()) spoken else "$text $spoken"
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -494,7 +534,29 @@ private fun PromptInputBar(
             maxLines = 4,
             enabled = isEnabled && !isSending,
         )
-        Spacer(Modifier.size(8.dp))
+        Spacer(Modifier.size(4.dp))
+        IconButton(
+            onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(
+                        RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+                    )
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ja-JP")
+                    putExtra(RecognizerIntent.EXTRA_PROMPT, "話してください")
+                }
+                // 端末に音声認識が無い (極端なカスタム ROM 等) と
+                // ActivityNotFoundException が出るので静かに飲み込む。
+                runCatching { voiceLauncher.launch(intent) }
+            },
+            enabled = isEnabled && !isSending,
+        ) {
+            Icon(
+                imageVector = Icons.Default.Mic,
+                contentDescription = "音声入力",
+            )
+        }
         IconButton(
             onClick = {
                 val toSend = text.trim()

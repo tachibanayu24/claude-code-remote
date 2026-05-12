@@ -244,9 +244,7 @@ export function toolUsageAfterFromJsonl(jsonl, fromLineIndex) {
  * blocks in order: `[{kind:'text', text}, {kind:'tool_use', name, input}]`.
  * Other block types (`thinking`, `image`, ...) are filtered out — only
  * narration and tool calls are surfaced. Pass `-1` to scan the entire jsonl.
- *
- * Callers derive both `assistant_text` (text-only join) and `tool_calls`
- * (tool_use list) from this single walk, keeping the two views consistent.
+ * Stop hook と channel heartbeat の双方で使い、phone は受け取った順序で描画する。
  */
 export function assistantBlocksAfterFromJsonl(jsonl, fromLineIndex = -1) {
   if (!jsonl) return []
@@ -272,37 +270,4 @@ export function assistantBlocksAfterFromJsonl(jsonl, fromLineIndex = -1) {
     } catch (_) {}
   }
   return blocks
-}
-
-/**
- * Concatenate every assistant text block emitted after `fromLineIndex`,
- * prefixed with `● ` and joined with blank lines — mirrors how CC renders
- * interleaved chunks in the terminal. Used both for snapshotting a
- * completed turn (Stop hook) and surfacing live narration to the phone
- * (channel heartbeat). Pass `-1` to scan the entire jsonl.
- *
- * U+25CF (BLACK CIRCLE) instead of CC's U+23FA: the latter has emoji
- * presentation on Android and would render as a record button glyph.
- */
-export function assistantTextsAfterFromJsonl(jsonl, fromLineIndex = -1) {
-  if (!jsonl) return ''
-  const lines = jsonl.split('\n')
-  const chunks = []
-  for (let i = Math.max(0, fromLineIndex + 1); i < lines.length; i++) {
-    const line = lines[i]
-    if (!line.includes('"type":"assistant"')) continue
-    try {
-      const e = JSON.parse(line)
-      if (e.type !== 'assistant') continue
-      const c = e.message?.content
-      if (!Array.isArray(c)) continue
-      const text = c
-        .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
-        .map((b) => b.text)
-        .join('\n')
-        .trim()
-      if (text) chunks.push(text)
-    } catch (_) {}
-  }
-  return chunks.map((t) => `● ${t}`).join('\n\n')
 }

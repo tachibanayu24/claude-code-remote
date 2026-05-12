@@ -84,25 +84,18 @@ switch (mode) {
     }
     const cwd = canonicalCwdFromJsonl(jsonl, cwdInput)
     const lastPrompt = lastUserPromptFromJsonl(jsonl)
-    // Single walk → derive narration text + tool_calls from the same blocks
-    // so they can't drift apart on edge cases.
+    // Ordered list of text + tool_use blocks as they appear in CC's jsonl —
+    // the phone renders them in this order to mirror the CLI's interleaved
+    // narration + tool invocations.
     const blocks = assistantBlocksAfterFromJsonl(jsonl, lastPrompt?.lineIndex ?? -1)
-    const fullMessage = blocks
-      .filter((b) => b.kind === 'text')
-      .map((b) => `● ${b.text}`)
-      .join('\n\n')
-    const toolCalls = blocks
-      .filter((b) => b.kind === 'tool_use')
-      .map((b) => ({ name: b.name, input: b.input }))
     await post('/v1/hook/stop', {
       session_id: sid ?? '',
       cwd,
       ai_title: aiTitleFromJsonl(jsonl),
       elapsed_ms: lastPrompt?.ms != null ? Date.now() - lastPrompt.ms : null,
-      full_message: fullMessage,
+      blocks,
       user_prompt: lastPrompt?.text ?? '',
       tool_summary: lastPrompt ? toolUsageAfterFromJsonl(jsonl, lastPrompt.lineIndex) : [],
-      tool_calls: toolCalls,
     })
     break
   }

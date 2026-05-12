@@ -14,14 +14,18 @@ app.post('/stop', async (c) => {
   const sessionId = body.session_id ?? ''
   const project = basename(cwd) || 'unknown'
   const elapsedMs = body.elapsed_ms ?? null
-  const fullMessage = body.full_message ?? ''
+  const blocks = body.blocks ?? []
+  const blocksJson = blocks.length > 0 ? JSON.stringify(blocks) : null
+  // Plain text rolled out of the blocks — only used for the FCM notification
+  // body (preview line). The turn payload itself is stored as ordered blocks.
+  const fullMessage = blocks
+    .filter((b): b is { kind: 'text'; text: string } => b.kind === 'text')
+    .map((b) => b.text)
+    .join('\n\n')
   const aiTitle = body.ai_title ?? ''
   const userPrompt = body.user_prompt ?? ''
   const toolSummary = body.tool_summary && body.tool_summary.length > 0
     ? JSON.stringify(body.tool_summary)
-    : null
-  const toolCalls = body.tool_calls && body.tool_calls.length > 0
-    ? JSON.stringify(body.tool_calls)
     : null
   const dryRun = body.dry_run === true
 
@@ -36,25 +40,24 @@ app.post('/stop', async (c) => {
   if (!dryRun && cwd && sessionId) {
     await c.env.DB.batch([
       c.env.DB.prepare(
-        `INSERT INTO turns (id, cwd, session_id, user_prompt, assistant_text, tool_summary, tool_calls, elapsed_ms, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO turns (id, cwd, session_id, user_prompt, blocks, tool_summary, elapsed_ms, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
         turnId,
         cwd,
         sessionId,
         userPrompt || null,
-        fullMessage || null,
+        blocksJson,
         toolSummary,
-        toolCalls,
         elapsedMs,
         nowSec(),
       ),
       // The Stop event ends an in-flight turn — clear both the live prompt
-      // marker and the partial assistant text so the detail screen stops
-      // showing them as "current". Scoped to session_id so concurrent CC in
-      // the same cwd aren't nulled out.
+      // marker and the partial blocks so the detail screen stops showing
+      // them as "current". Scoped to session_id so concurrent CC in the
+      // same cwd aren't nulled out.
       c.env.DB.prepare(
-        'UPDATE sessions SET current_prompt = NULL, current_assistant_text = NULL WHERE session_id = ?'
+        'UPDATE sessions SET current_prompt = NULL, current_blocks = NULL WHERE session_id = ?'
       ).bind(sessionId),
     ])
   }
@@ -92,7 +95,6 @@ app.post('/stop', async (c) => {
     body: summary,
     session_id: sessionId,
     elapsed_ms: elapsedMs != null ? String(elapsedMs) : '',
-    full_message: fullMessage,
   })
   return c.json({ ok: true, id, dismissed, notified, turn_id: turnId })
 })

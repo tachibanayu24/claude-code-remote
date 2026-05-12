@@ -1,6 +1,7 @@
 package com.tachibanayu24.ccremote.data
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 data class Config(
     val backendUrl: String,
@@ -28,7 +29,7 @@ data class HookStopRequest(
     val cwd: String,
     val ai_title: String? = null,
     val elapsed_ms: Long? = null,
-    val full_message: String? = null,
+    val blocks: List<Block> = emptyList(),
 )
 
 @Serializable
@@ -53,13 +54,27 @@ data class SessionsResponse(val sessions: List<Session>)
 @Serializable
 data class ToolUsage(val name: String, val count: Int)
 
+/**
+ * One block of assistant output. `kind` discriminates:
+ *  - `"text"`     → `text` populated; other fields null.
+ *  - `"tool_use"` → `name` + `input` populated; `text` null.
+ * Single class (rather than a sealed hierarchy) keeps kotlinx.serialization
+ * happy without a custom discriminator setting.
+ */
+@Serializable
+data class Block(
+    val kind: String,
+    val text: String? = null,
+    val name: String? = null,
+    val input: JsonObject? = null,
+)
+
 @Serializable
 data class Turn(
     val id: String,
     val user_prompt: String? = null,
-    val assistant_text: String? = null,
+    val blocks: List<Block> = emptyList(),
     val tool_summary: List<ToolUsage> = emptyList(),
-    val tool_calls: List<ToolCall> = emptyList(),
     val elapsed_ms: Long? = null,
     val ended_at: Long,
 )
@@ -71,6 +86,8 @@ data class PendingApproval(
     val description: String = "",
     val input_preview: String = "",
     val created_at: Long,
+    // 旧 backend 互換: フィールドが無い場合は旧挙動 (常に Always を出す) に倒す。
+    val supports_always: Boolean = true,
 )
 
 @Serializable
@@ -87,7 +104,7 @@ data class SessionDetailHeader(
     val project_name: String,
     val ai_title: String? = null,
     val current_prompt: String? = null,
-    val current_assistant_text: String? = null,
+    val current_blocks: List<Block> = emptyList(),
     val last_heartbeat: Long,
     val jsonl_mtime: Long? = null,
 )

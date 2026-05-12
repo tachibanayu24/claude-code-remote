@@ -1,6 +1,7 @@
 package com.tachibanayu24.ccremote.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -23,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tachibanayu24.ccremote.data.ToolCall
 import com.tachibanayu24.ccremote.data.bashCommand
@@ -30,8 +33,11 @@ import com.tachibanayu24.ccremote.data.editOp
 import com.tachibanayu24.ccremote.data.filePath
 import com.tachibanayu24.ccremote.data.multiEditOps
 import com.tachibanayu24.ccremote.data.pattern
+import com.tachibanayu24.ccremote.data.str
 import com.tachibanayu24.ccremote.data.url
 import com.tachibanayu24.ccremote.data.writeContent
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import com.tachibanayu24.ccremote.ui.code.CodeBlock
 import com.tachibanayu24.ccremote.ui.code.extensionOf
 import com.tachibanayu24.ccremote.ui.code.resolveLanguage
@@ -67,9 +73,68 @@ fun ToolCallBlock(call: ToolCall, key: String) {
         "Read", "Glob" -> SimpleRow(call.name, call.filePath ?: call.pattern ?: "?")
         "Grep" -> SimpleRow("Grep", call.pattern ?: "?")
         "WebFetch" -> SimpleRow("WebFetch", call.url?.let(::hostOnly) ?: "?")
-        else -> SimpleRow(call.name, "")
+        "WebSearch" -> SimpleRow("WebSearch", call.input.str("query") ?: "?")
+        "Agent" -> SimpleRow("Agent", agentTarget(call))
+        "ScheduleWakeup" -> SimpleRow("ScheduleWakeup", scheduleWakeupTarget(call))
+        "TaskCreate" -> SimpleRow("TaskCreate", call.input.str("subject") ?: "?")
+        "TaskUpdate" -> SimpleRow("TaskUpdate", taskUpdateTarget(call))
+        "TaskList" -> SimpleRow("TaskList", "")
+        "TaskGet", "TaskStop", "TaskOutput" -> SimpleRow(call.name, taskRefTarget(call))
+        else -> SimpleRow(prettyName(call.name), genericTarget(call))
     }
 }
+
+/** TaskUpdate は status 遷移 (in_progress→completed 等) が一番見たい情報。 */
+private fun taskUpdateTarget(call: ToolCall): String {
+    val id = call.input.str("taskId") ?: "?"
+    val status = call.input.str("status")
+    return if (!status.isNullOrBlank()) "#$id → $status" else "#$id"
+}
+
+private fun taskRefTarget(call: ToolCall): String =
+    "#${call.input.str("taskId") ?: "?"}"
+
+/** Agent の "description" は agent 起動の意図 (3-5 words) でちょうどよく短い。 */
+private fun agentTarget(call: ToolCall): String {
+    val type = call.input.str("subagent_type") ?: "general-purpose"
+    val desc = call.input.str("description")
+    return if (!desc.isNullOrBlank()) "$type · $desc" else type
+}
+
+/** ScheduleWakeup は「次の起動まで」が短いほど活発な loop。reason も一緒に出す。 */
+private fun scheduleWakeupTarget(call: ToolCall): String {
+    val sec = call.input["delaySeconds"]
+        ?.let { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }
+    val reason = call.input.str("reason")
+    val delay = sec?.let { "${it}s" } ?: "?"
+    return if (!reason.isNullOrBlank()) "$delay · $reason" else delay
+}
+
+/**
+ * 未知のツール向けフォールバック: 「自然に主役になりそうな key」を順に当たって
+ * 最初に見つかった文字列値を target にする。MCP ツールは大半が name/query/text
+ * 系の入力なので、これでカバーできることが多い。
+ */
+private val GENERIC_KEYS = listOf(
+    "subject", "description", "query", "prompt", "reason",
+    "name", "title", "body", "text", "command", "path",
+    "skill", "libraryName", "libraryId",
+)
+
+private fun genericTarget(call: ToolCall): String {
+    for (k in GENERIC_KEYS) {
+        val v = call.input.str(k)
+        if (!v.isNullOrBlank()) return v
+    }
+    return ""
+}
+
+/**
+ * `mcp__plugin_context7_context7__query-docs` のような MCP ツール名は冗長なので
+ * 最後の `__` 以降だけ出す → `query-docs`。非 MCP はそのまま。
+ */
+private fun prettyName(name: String): String =
+    if (name.startsWith("mcp__")) name.substringAfterLast("__") else name
 
 @Composable
 private fun ToolHeader(
@@ -95,13 +160,22 @@ private fun ToolHeader(
         )
         if (target.isNotBlank()) {
             Spacer(Modifier.width(6.dp))
+            // 1 行固定 + 横スクロール。折り返すと header が縦に伸びてリスト視認性
+            // が落ちる一方、truncate だと全文が見えない。Bash の CodeBlock と
+            // 同じ horizontalScroll に揃えて「読みたければ横にスワイプ」にする。
+            // 縦タップ (accordion 展開) と横スワイプは Compose のジェスチャ
+            // 競合で両立する。
             Text(
                 text = "· $target",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
                 softWrap = false,
-                modifier = Modifier.weight(1f, fill = false),
+                maxLines = 1,
+                overflow = TextOverflow.Clip,
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState()),
             )
         }
         if (suffix != null) {
@@ -135,7 +209,10 @@ private fun BashRow(call: ToolCall) {
     Column {
         ToolHeader(name = "Bash", target = "")
         if (command.isNotBlank()) {
-            CodeBlock(code = command, language = SyntaxLanguage.SHELL)
+            // SyntaxLanguage.SHELL の keyword 表は実コマンド (git/npm/curl 等) と
+            // 噛み合わず誤強調が目立つので、Bash はあえてハイライトせず
+            // プレーン monospace で出す。
+            CodeBlock(code = command, language = null)
         }
     }
 }

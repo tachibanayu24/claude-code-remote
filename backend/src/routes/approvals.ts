@@ -10,6 +10,10 @@ import type {
 
 const app = new Hono<{ Bindings: Bindings }>()
 
+// channel.mjs から省略された場合の互換デフォルト。旧 channel は Always 判定を
+// 持たないので「常に有効」側に倒す。
+const supportsAlwaysDefault = (v: unknown): boolean => (typeof v === 'boolean' ? v : true)
+
 app.post('/', async (c) => {
   const body = await readJson<ApprovalCreateRequest>(c.req.raw)
   if (!body?.project_name || !body.tool_name || !body.session_id) {
@@ -18,9 +22,13 @@ app.post('/', async (c) => {
   const id = crypto.randomUUID()
   // tool_input is preserved in D1 for the future history view (description +
   // input_preview, the same fields rendered in the notification body).
+  // supports_always は channel.mjs が計算した値を JSON blob に同居させて、
+  // /notify と /turns で再利用する。専用カラムを増やさずに済むので migration
+  // 不要。
   const toolInput = JSON.stringify({
     description: body.description ?? '',
     input_preview: body.input_preview ?? '',
+    supports_always: supportsAlwaysDefault(body.supports_always),
   })
   await c.env.DB.prepare(
     `INSERT INTO approvals (id, session_id, cwd, project_name, tool_name, tool_input, session_label, status, created_at)
@@ -60,6 +68,7 @@ app.post('/', async (c) => {
     tool_name: body.tool_name,
     description: body.description ?? '',
     input_preview: body.input_preview ?? '',
+    supports_always: supportsAlwaysDefault(body.supports_always) ? 'true' : 'false',
   })
   return c.json({ id, status: 'pending', notified, notify_after_ms: 0 })
 })
@@ -83,7 +92,11 @@ app.post('/:id/notify', async (c) => {
   if (row.status !== 'pending') {
     return c.json({ ok: true, skipped: row.status })
   }
-  let parsedInput: { description?: string; input_preview?: string } = {}
+  let parsedInput: {
+    description?: string
+    input_preview?: string
+    supports_always?: boolean
+  } = {}
   try {
     parsedInput = JSON.parse(row.tool_input) ?? {}
   } catch (_) {
@@ -97,6 +110,7 @@ app.post('/:id/notify', async (c) => {
     tool_name: row.tool_name,
     description: parsedInput.description ?? '',
     input_preview: parsedInput.input_preview ?? '',
+    supports_always: supportsAlwaysDefault(parsedInput.supports_always) ? 'true' : 'false',
   })
   return c.json({ ok: true, notified })
 })

@@ -16,6 +16,10 @@ data class ApprovalPayload(
     val toolName: String,
     val description: String,
     val inputPreview: String,
+    // Backend が tool_name から計算した「Always を押したときに意味のある allowlist
+    // パターンを作れるか」のヒント。false のときは Always ボタンを出さない —
+    // 出しても channel.mjs 側で握りつぶされて誤解を招くだけなので。
+    val supportsAlways: Boolean,
 ) {
     val notificationId: Int get() = requestId.hashCode()
 
@@ -53,6 +57,9 @@ data class ApprovalPayload(
                 toolName = data["tool_name"].orEmpty(),
                 description = data["description"].orEmpty(),
                 inputPreview = data["input_preview"].orEmpty(),
+                // 古い backend からのペイロード互換: フィールドが無い場合は
+                // 旧挙動 = 常に Always を表示。
+                supportsAlways = data["supports_always"] != "false",
             )
         }
     }

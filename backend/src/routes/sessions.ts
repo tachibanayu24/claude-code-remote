@@ -100,14 +100,14 @@ app.get('/:sid/turns', async (c) => {
   c.executionCtx.waitUntil(cleanupOldTurns(c.env.DB))
 
   const session = await c.env.DB.prepare(
-    `SELECT session_id, cwd, project_name, ai_title, jsonl_mtime, last_heartbeat, current_prompt, current_assistant_text
+    `SELECT session_id, cwd, project_name, ai_title, jsonl_mtime, last_heartbeat, current_prompt, current_blocks
      FROM sessions WHERE session_id = ?`
   ).bind(sid).first<SessionRow>()
   if (!session) return c.json({ error: 'not found' }, 404)
 
   const detailBatch = await c.env.DB.batch<unknown>([
     c.env.DB.prepare(
-      `SELECT id, user_prompt, assistant_text, tool_summary, tool_calls, elapsed_ms, ended_at
+      `SELECT id, user_prompt, blocks, tool_summary, elapsed_ms, ended_at
        FROM turns WHERE session_id = ? ORDER BY ended_at DESC LIMIT ?`
     ).bind(sid, limit),
     c.env.DB.prepare(
@@ -135,13 +135,12 @@ app.get('/:sid/turns', async (c) => {
   const turns = ((turnsRes.results ?? []) as TurnRow[]).map((r) => ({
     id: r.id,
     user_prompt: r.user_prompt,
-    assistant_text: r.assistant_text,
     // Defensive parse: a corrupted JSON payload (manual DB tampering, half-
     // written rows from a previous version) shouldn't take the whole detail
     // endpoint down with a 500. Fall back to an empty list and warn — the
-    // turn still renders, just without tool / summary info.
+    // turn still renders, just without narration / tool info.
+    blocks: parseJsonArray(r.blocks, `turn ${r.id} blocks`),
     tool_summary: parseJsonArray(r.tool_summary, `turn ${r.id} tool_summary`),
-    tool_calls: parseJsonArray(r.tool_calls, `turn ${r.id} tool_calls`),
     elapsed_ms: r.elapsed_ms,
     ended_at: r.ended_at,
   }))
@@ -149,7 +148,11 @@ app.get('/:sid/turns', async (c) => {
   const pendingApprovals = ((pendingRes.results ?? []) as Array<{
     id: string; tool_name: string; tool_input: string; created_at: number
   }>).map((r) => {
-    let parsed: { description?: string; input_preview?: string } = {}
+    let parsed: {
+      description?: string
+      input_preview?: string
+      supports_always?: boolean
+    } = {}
     try {
       parsed = JSON.parse(r.tool_input)
     } catch (e) {
@@ -161,6 +164,9 @@ app.get('/:sid/turns', async (c) => {
       description: parsed.description ?? '',
       input_preview: parsed.input_preview ?? '',
       created_at: r.created_at,
+      // 旧 row (channel.mjs が flag を送る前に作成) は supports_always 不明 →
+      // 旧挙動 = 常に Always を出す側に倒す。
+      supports_always: typeof parsed.supports_always === 'boolean' ? parsed.supports_always : true,
     }
   })
 
@@ -175,7 +181,7 @@ app.get('/:sid/turns', async (c) => {
       project_name: session.project_name,
       ai_title: session.ai_title,
       current_prompt: session.current_prompt,
-      current_assistant_text: session.current_assistant_text,
+      current_blocks: parseJsonArray(session.current_blocks, `session ${session.session_id} current_blocks`),
       last_heartbeat: session.last_heartbeat,
       // jsonl_mtime is a fractional ms epoch on macOS; floor for JSON Long
       // consumers (Android).

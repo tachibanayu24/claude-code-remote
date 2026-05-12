@@ -22,6 +22,10 @@ export interface ApprovalCreateRequest {
   tool_name: string
   description?: string
   input_preview?: string
+  // channel.mjs が deriveAllowPattern で判定した「Always が有効か」フラグ。
+  // backend 側は受け取って FCM / sessions レスポンスに転送するだけ。古い
+  // channel.mjs が省略してきた場合は undefined → 互換のため true とみなす。
+  supports_always?: boolean
 }
 
 export interface ApprovalRespondRequest {
@@ -35,23 +39,25 @@ export interface ToolUsage {
   count: number
 }
 
-export interface ToolCall {
-  name: string
-  // Free-form: passed through from CC's jsonl. Bash → {command}, Edit →
-  // {file_path, old_string, new_string}, MultiEdit → {file_path, edits: [...]},
-  // Read/Glob → {file_path or pattern}, etc. Stored as JSON in turns.tool_calls.
-  input: Record<string, unknown>
-}
+/**
+ * Ordered narration / tool-use blocks as they appear in CC's jsonl. Preserves
+ * the interleave between text and tool calls so the phone can render them in
+ * chronological order (matching the CLI), rather than batching all tools after
+ * all text. `input` is the raw tool_use input from jsonl: Bash → {command},
+ * Edit → {file_path, old_string, new_string}, MultiEdit → {edits: [...]}, etc.
+ */
+export type Block =
+  | { kind: 'text'; text: string }
+  | { kind: 'tool_use'; name: string; input: Record<string, unknown> }
 
 export interface HookStopRequest {
   session_id: string
   cwd: string
   ai_title?: string
   elapsed_ms: number | null
-  full_message?: string
+  blocks?: Block[]
   user_prompt?: string
   tool_summary?: ToolUsage[]
-  tool_calls?: ToolCall[]
   // Dev-only: skip the FCM push and D1 insert; return what would have been sent.
   // Used by smoke tests so the phone doesn't get buzzed.
   dry_run?: boolean
@@ -70,15 +76,14 @@ export interface SessionRow {
   jsonl_mtime: number | null
   last_heartbeat: number
   current_prompt: string | null
-  current_assistant_text: string | null
+  current_blocks: string | null  // JSON-encoded Block[]
 }
 
 export interface TurnRow {
   id: string
   user_prompt: string | null
-  assistant_text: string | null
+  blocks: string | null  // JSON-encoded Block[]
   tool_summary: string | null  // JSON-encoded ToolUsage[]
-  tool_calls: string | null  // JSON-encoded ToolCall[]
   elapsed_ms: number | null
   ended_at: number
 }
@@ -93,7 +98,7 @@ export interface WaitRequest {
   ai_title?: string | null
   jsonl_mtime?: number | null
   current_prompt?: string | null
-  current_assistant_text?: string | null
+  current_blocks?: Block[] | null
   pending_request_ids?: string[]
 }
 

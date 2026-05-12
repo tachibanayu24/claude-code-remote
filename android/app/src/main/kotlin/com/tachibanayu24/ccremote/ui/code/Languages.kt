@@ -41,5 +41,7 @@ private val ALIAS_TO_LANGUAGE: Map<String, SyntaxLanguage> = buildMap {
     put(SyntaxLanguage.PHP, "php")
     put(SyntaxLanguage.PERL, "perl", "pl", "pm")
     put(SyntaxLanguage.COFFEESCRIPT, "coffee", "coffeescript")
-    put(SyntaxLanguage.SHELL, "shell", "sh", "bash", "zsh")
+    // shell/sh/bash/zsh は SyntaxLanguage.SHELL の keyword 表が実コマンドと
+    // 噛み合わず誤強調が多いので、ハイライト対象から外して plain monospace
+    // にする。Bash tool の表示 (ToolCallBlock の BashRow) と揃える。
 }

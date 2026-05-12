@@ -32,8 +32,11 @@ app.post('/', async (c) => {
   // last_heartbeat + the in-flight snapshot fields, removing the need for a
   // separate /v1/sessions/heartbeat call.
   const now = nowSec()
+  const currentBlocksJson = body.current_blocks && body.current_blocks.length > 0
+    ? JSON.stringify(body.current_blocks)
+    : null
   await c.env.DB.prepare(
-    `INSERT INTO sessions (session_id, cwd, project_name, ai_title, jsonl_mtime, last_heartbeat, updated_at, current_prompt, current_assistant_text)
+    `INSERT INTO sessions (session_id, cwd, project_name, ai_title, jsonl_mtime, last_heartbeat, updated_at, current_prompt, current_blocks)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(session_id) DO UPDATE SET
        cwd = excluded.cwd,
@@ -43,7 +46,7 @@ app.post('/', async (c) => {
        last_heartbeat = excluded.last_heartbeat,
        updated_at = excluded.updated_at,
        current_prompt = excluded.current_prompt,
-       current_assistant_text = excluded.current_assistant_text`
+       current_blocks = excluded.current_blocks`
   )
     .bind(
       sid,
@@ -54,7 +57,7 @@ app.post('/', async (c) => {
       now,
       now,
       body.current_prompt ?? null,
-      body.current_assistant_text ?? null,
+      currentBlocksJson,
     )
     .run()
 

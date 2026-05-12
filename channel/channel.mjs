@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url'
 import { CLAUDE_HOME, loadEnv } from '../hooks/lib/env.mjs'
 import {
   aiTitleFromJsonl,
-  assistantTextsAfterFromJsonl,
+  assistantBlocksAfterFromJsonl,
   hasEndTurnAfter,
   jsonlPath,
   lastUserPromptFromJsonl,
@@ -37,9 +37,9 @@ const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
 const SESSION_LABEL_TTL_MS = 5_000
 // Long-poll cadence for /v1/wait. The same request also carries the
 // heartbeat snapshot, so wait cadence == heartbeat cadence. Inflight uses a
-// shorter hold so the phone sees `current_assistant_text` updates with ~5s
-// lag; idle holds longer to keep request count down (CF Workers Free is
-// 100k req/day).
+// shorter hold so the phone sees `current_blocks` updates with ~5s lag;
+// idle holds longer to keep request count down (CF Workers Free is 100k
+// req/day).
 const WAIT_INFLIGHT_MAX_MS = 5_000
 const WAIT_IDLE_MAX_MS = 15_000
 // Network-level timeout: server-side cap + slack for transit + retry hop.
@@ -114,9 +114,9 @@ function getSessionLabel() {
 /**
  * Snapshot of session state, sent to backend once per heartbeat tick.
  *
- * `current_prompt` and `current_assistant_text` are populated only while a
- * turn is in flight (latest user prompt has no `end_turn` after it). Both
- * are nulled out on the Stop hook by the backend, so we don't have to race
+ * `current_prompt` and `current_blocks` are populated only while a turn is
+ * in flight (latest user prompt has no `end_turn` after it). Both are
+ * nulled out on the Stop hook by the backend, so we don't have to race
  * against it here. Backend derives `working` vs `idle` from current_prompt
  * — jsonl_mtime is exposed to clients as a freshness hint only.
  */
@@ -127,7 +127,7 @@ function inspectSession() {
   let jsonl_mtime = null
   let ai_title = ''
   let current_prompt = null
-  let current_assistant_text = null
+  let current_blocks = null
   if (sessionId) {
     const path = jsonlPath(cwd, sessionId)
     try { jsonl_mtime = statSync(path).mtimeMs } catch (_) {}
@@ -137,12 +137,12 @@ function inspectSession() {
       const lastPrompt = lastUserPromptFromJsonl(jsonl)
       if (lastPrompt && !hasEndTurnAfter(jsonl, lastPrompt.lineIndex)) {
         current_prompt = lastPrompt.text || null
-        const partial = assistantTextsAfterFromJsonl(jsonl, lastPrompt.lineIndex)
-        current_assistant_text = partial || null
+        const partial = assistantBlocksAfterFromJsonl(jsonl, lastPrompt.lineIndex)
+        current_blocks = partial.length > 0 ? partial : null
       }
     } catch (_) {}
   }
-  return { cwd, session_id: sessionId, ai_title, jsonl_mtime, current_prompt, current_assistant_text }
+  return { cwd, session_id: sessionId, ai_title, jsonl_mtime, current_prompt, current_blocks }
 }
 
 // ---------- Allowlist file management ----------
@@ -249,6 +249,12 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     return
   }
 
+  // Compute "does Always have a meaningful effect for this tool?" here, so
+  // backend / phone don't need their own copy of the Bash/WebFetch rule.
+  // deriveAllowPattern is the single source of truth — if it returns a
+  // pattern now, the phone's Always tap will produce the same one later.
+  const supportsAlways = deriveAllowPattern(tool_name, input_preview) != null
+
   let backendId
   let notifyAfterMs = 0
   try {
@@ -260,6 +266,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
       tool_name,
       description,
       input_preview,
+      supports_always: supportsAlways,
     })
     if (!res.ok) {
       log(`backend POST failed ${request_id}: HTTP ${res.status}`)
@@ -349,7 +356,7 @@ async function waitLoop() {
       ai_title: snapshot.ai_title,
       jsonl_mtime: snapshot.jsonl_mtime,
       current_prompt: snapshot.current_prompt,
-      current_assistant_text: snapshot.current_assistant_text,
+      current_blocks: snapshot.current_blocks,
       pending_request_ids: [...pendingApprovals.keys()],
     }
     let data

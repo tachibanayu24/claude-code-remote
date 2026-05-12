@@ -26,8 +26,12 @@ data class ToolCall(
  * them here is cheaper than a generic JSON walker — the UI knows exactly what
  * fields each kind has, and unknown tools fall through to a generic "name +
  * raw input preview" rendering.
+ *
+ * `str` is `internal` so [ToolCallBlock] can reuse it for tools whose only
+ * meaningful input is a string (Task*, WebSearch, Agent, ...) without
+ * needing a typed accessor per tool.
  */
-private fun JsonObject.str(key: String): String? =
+internal fun JsonObject.str(key: String): String? =
     this[key]?.let { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }
 
 data class EditOp(val oldString: String, val newString: String)

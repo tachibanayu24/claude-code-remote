@@ -40,7 +40,7 @@ object NotificationFactory {
         )
         val tap = openSessionPending(context, payload.sessionId, requestCode = notificationId * 4 + 3)
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
+        val builder = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
             .setSmallIcon(R.drawable.ic_clawd)
             .setContentTitle(payload.title)
             .setContentText(payload.detail.ifBlank { payload.toolName })
@@ -54,9 +54,11 @@ object NotificationFactory {
             .setAutoCancel(true)
             .setContentIntent(tap)
             .addAction(R.drawable.ic_check, "Allow", approve)
-            .addAction(R.drawable.ic_check, "Always", approveAlways)
-            .addAction(R.drawable.ic_close, "Deny", deny)
-            .build()
+        if (payload.supportsAlways) {
+            builder.addAction(R.drawable.ic_check, "Always", approveAlways)
+        }
+        builder.addAction(R.drawable.ic_close, "Deny", deny)
+        val notification = builder.build()
 
         try {
             NotificationManagerCompat.from(context).notify(notificationId, notification)

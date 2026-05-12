@@ -114,7 +114,7 @@ class BackendClient(private val config: Config) {
                     // Pass an elapsed value over any reasonable threshold so the
                     // backend always pushes the FCM for this manual test.
                     elapsed_ms = 24L * 60L * 60L * 1000L,
-                    full_message = "test",
+                    blocks = listOf(Block(kind = "text", text = "test")),
                 ),
             )
         }
