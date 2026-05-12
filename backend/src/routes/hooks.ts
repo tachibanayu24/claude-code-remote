@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
-import { dismissPendingApprovals, nowSec, readJson } from '../db'
+import { dismissPendingApprovals } from '../approvals'
+import { nowSec, readJson } from '../db'
 import { basename, formatElapsed, previewLine } from '../format'
 import { notifyInfo } from '../push'
 import { readSettings } from '../settings'

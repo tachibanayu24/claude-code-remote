@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { parseToolInputBlob } from '../approvals'
 import { cleanupOldTurns, cleanupStaleSessions, nowSec } from '../db'
 import type { Bindings, SessionRow, TurnRow } from '../types'
 
@@ -148,25 +149,14 @@ app.get('/:sid/turns', async (c) => {
   const pendingApprovals = ((pendingRes.results ?? []) as Array<{
     id: string; tool_name: string; tool_input: string; created_at: number
   }>).map((r) => {
-    let parsed: {
-      description?: string
-      input_preview?: string
-      supports_always?: boolean
-    } = {}
-    try {
-      parsed = JSON.parse(r.tool_input)
-    } catch (e) {
-      console.warn(`failed to parse tool_input for approval ${r.id}: ${e}`)
-    }
+    const blob = parseToolInputBlob(r.tool_input)
     return {
       id: r.id,
       tool_name: r.tool_name,
-      description: parsed.description ?? '',
-      input_preview: parsed.input_preview ?? '',
+      description: blob.description,
+      input_preview: blob.input_preview,
       created_at: r.created_at,
-      // 旧 row (channel.mjs が flag を送る前に作成) は supports_always 不明 →
-      // 旧挙動 = 常に Always を出す側に倒す。
-      supports_always: typeof parsed.supports_always === 'boolean' ? parsed.supports_always : true,
+      supports_always: blob.supports_always,
     }
   })
 

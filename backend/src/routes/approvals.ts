@@ -1,5 +1,13 @@
 import { Hono } from 'hono'
-import { dismissApprovalById, nowSec, readJson } from '../db'
+import {
+  approvalPushData,
+  dismissApprovalById,
+  encodeToolInputBlob,
+  parseToolInputBlob,
+  supportsAlwaysDefault,
+  type ToolInputBlob,
+} from '../approvals'
+import { nowSec, readJson } from '../db'
 import { notifyApprovalRequest, notifyApprovalResolved } from '../push'
 import { readSettings } from '../settings'
 import type {
@@ -10,26 +18,17 @@ import type {
 
 const app = new Hono<{ Bindings: Bindings }>()
 
-// channel.mjs から省略された場合の互換デフォルト。旧 channel は Always 判定を
-// 持たないので「常に有効」側に倒す。
-const supportsAlwaysDefault = (v: unknown): boolean => (typeof v === 'boolean' ? v : true)
-
 app.post('/', async (c) => {
   const body = await readJson<ApprovalCreateRequest>(c.req.raw)
   if (!body?.project_name || !body.tool_name || !body.session_id) {
     return c.json({ error: 'session_id, project_name, tool_name required' }, 400)
   }
   const id = crypto.randomUUID()
-  // tool_input is preserved in D1 for the future history view (description +
-  // input_preview, the same fields rendered in the notification body).
-  // supports_always は channel.mjs が計算した値を JSON blob に同居させて、
-  // /notify と /turns で再利用する。専用カラムを増やさずに済むので migration
-  // 不要。
-  const toolInput = JSON.stringify({
+  const blob: ToolInputBlob = {
     description: body.description ?? '',
     input_preview: body.input_preview ?? '',
     supports_always: supportsAlwaysDefault(body.supports_always),
-  })
+  }
   await c.env.DB.prepare(
     `INSERT INTO approvals (id, session_id, cwd, project_name, tool_name, tool_input, session_label, status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
@@ -40,7 +39,7 @@ app.post('/', async (c) => {
       body.cwd ?? '',
       body.project_name,
       body.tool_name,
-      toolInput,
+      encodeToolInputBlob(blob),
       body.session_label ?? null,
       nowSec()
     )
@@ -60,16 +59,14 @@ app.post('/', async (c) => {
     })
   }
 
-  const notified = await notifyApprovalRequest(c.env, c.env.DB, {
-    request_id: id,
+  const notified = await notifyApprovalRequest(c.env, c.env.DB, approvalPushData({
+    id,
     session_id: body.session_id,
-    project: body.project_name,
-    session_label: body.session_label ?? '',
+    project_name: body.project_name,
+    session_label: body.session_label,
     tool_name: body.tool_name,
-    description: body.description ?? '',
-    input_preview: body.input_preview ?? '',
-    supports_always: supportsAlwaysDefault(body.supports_always) ? 'true' : 'false',
-  })
+    ...blob,
+  }))
   return c.json({ id, status: 'pending', notified, notify_after_ms: 0 })
 })
 
@@ -92,26 +89,15 @@ app.post('/:id/notify', async (c) => {
   if (row.status !== 'pending') {
     return c.json({ ok: true, skipped: row.status })
   }
-  let parsedInput: {
-    description?: string
-    input_preview?: string
-    supports_always?: boolean
-  } = {}
-  try {
-    parsedInput = JSON.parse(row.tool_input) ?? {}
-  } catch (_) {
-    // tool_input from older rows might not be JSON; treat as opaque.
-  }
-  const notified = await notifyApprovalRequest(c.env, c.env.DB, {
-    request_id: id,
+  const blob = parseToolInputBlob(row.tool_input)
+  const notified = await notifyApprovalRequest(c.env, c.env.DB, approvalPushData({
+    id,
     session_id: row.session_id,
-    project: row.project_name,
-    session_label: row.session_label ?? '',
+    project_name: row.project_name,
+    session_label: row.session_label,
     tool_name: row.tool_name,
-    description: parsedInput.description ?? '',
-    input_preview: parsedInput.input_preview ?? '',
-    supports_always: supportsAlwaysDefault(parsedInput.supports_always) ? 'true' : 'false',
-  })
+    ...blob,
+  }))
   return c.json({ ok: true, notified })
 })
 
