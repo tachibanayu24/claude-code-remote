@@ -35,6 +35,33 @@ export async function dismissPendingApprovals(
 }
 
 /**
+ * Single-row variant of dismissPendingApprovals. Channel.mjs hits this when
+ * JSONL shows a tool_result on the bound tool_use_id, i.e. CC has moved
+ * past the local prompt and the pending FCM push is no longer wanted. The
+ * resolved push (`decision:'expired'`) clears any in-flight Android UI.
+ * Returns true iff the row was actually transitioned (pending → expired).
+ */
+export async function dismissApprovalById(
+  db: D1Database,
+  env: Bindings,
+  id: string,
+): Promise<boolean> {
+  if (!id) return false
+  const res = await db.prepare(
+    `UPDATE approvals SET status = 'expired', resolved_at = ?
+     WHERE status = 'pending' AND id = ?
+     RETURNING id`,
+  ).bind(nowSec(), id).all<{ id: string }>()
+  if ((res.results ?? []).length === 0) return false
+  await notifyApprovalResolved(env, db, {
+    request_id: id,
+    decision: 'expired',
+    resolved_by: 'cli',
+  })
+  return true
+}
+
+/**
  * Cleanup helpers fired from `c.executionCtx.waitUntil(...)` inside read
  * endpoints. Cheap (range scan on indexed columns), runs after the response is
  * sent, no cron needed. Errors are intentionally swallowed — a failed cleanup

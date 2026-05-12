@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { nowSec, readJson } from '../db'
+import { dismissApprovalById, nowSec, readJson } from '../db'
 import { notifyApprovalRequest, notifyApprovalResolved } from '../push'
 import { readSettings } from '../settings'
 import type {
@@ -113,6 +113,16 @@ app.post('/:id/notify', async (c) => {
     supports_always: supportsAlwaysDefault(parsedInput.supports_always) ? 'true' : 'false',
   })
   return c.json({ ok: true, notified })
+})
+
+app.post('/:id/dismiss', async (c) => {
+  // channel.mjs proactively expires a pending approval when JSONL shows
+  // CC has moved past the matching prompt (allow → tool_result, or deny →
+  // error tool_result) before the ask_delay elapses. Idempotent: a row
+  // already in any non-pending state is silently a no-op.
+  const id = c.req.param('id')
+  const dismissed = await dismissApprovalById(c.env.DB, c.env, id)
+  return c.json({ ok: true, dismissed })
 })
 
 app.post('/:id/respond', async (c) => {

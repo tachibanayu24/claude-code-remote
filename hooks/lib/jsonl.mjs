@@ -240,6 +240,110 @@ export function toolUsageAfterFromJsonl(jsonl, fromLineIndex) {
 }
 
 /**
+ * Find the most recent assistant `tool_use` block that has NOT yet been
+ * paired with a `tool_result`, matching `toolName` and (if parsable)
+ * `inputPreview`. This is the canonical signal channel.mjs uses to bind a
+ * permission_request to a specific tool_use_id — the same id later carries
+ * the tool_result, which doubles as the "CC moved past this prompt" signal.
+ *
+ * Match priority: exact-input match > latest pending name match. Returns
+ * `{ id, lineIndex }` or null.
+ */
+export function findPendingToolUseInJsonl(jsonl, toolName, inputPreview) {
+  if (!jsonl || !toolName) return null
+  let targetInput = null
+  try { if (inputPreview) targetInput = JSON.parse(inputPreview) } catch (_) {}
+  const lines = jsonl.split('\n')
+  const resulted = new Set()
+  const toolUses = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.includes('"type":"tool_result"')) {
+      try {
+        const e = JSON.parse(line)
+        if (e.type === 'user') {
+          const c = e.message?.content
+          if (Array.isArray(c)) {
+            for (const b of c) {
+              if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+                resulted.add(b.tool_use_id)
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    if (line.includes('"type":"tool_use"')) {
+      try {
+        const e = JSON.parse(line)
+        if (e.type !== 'assistant') continue
+        const c = e.message?.content
+        if (!Array.isArray(c)) continue
+        for (const b of c) {
+          if (b?.type === 'tool_use' && typeof b.id === 'string' && b.name === toolName) {
+            toolUses.push({ id: b.id, input: b.input ?? {}, lineIndex: i })
+          }
+        }
+      } catch (_) {}
+    }
+  }
+  const pending = toolUses.filter((t) => !resulted.has(t.id))
+  if (pending.length === 0) return null
+  if (targetInput !== null) {
+    for (let i = pending.length - 1; i >= 0; i--) {
+      if (deepEqualJson(pending[i].input, targetInput)) {
+        return { id: pending[i].id, lineIndex: pending[i].lineIndex }
+      }
+    }
+  }
+  const last = pending[pending.length - 1]
+  return { id: last.id, lineIndex: last.lineIndex }
+}
+
+/**
+ * True if a `tool_result` entry exists for `toolUseId`. Channel.mjs treats
+ * this as "CC has moved past the matching permission prompt" — either the
+ * tool ran to completion (allow) or CC wrote an error result (deny).
+ */
+export function hasToolResultFor(jsonl, toolUseId) {
+  if (!jsonl || !toolUseId) return false
+  if (!jsonl.includes(toolUseId)) return false
+  const lines = jsonl.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.includes('"type":"tool_result"')) continue
+    if (!line.includes(toolUseId)) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type !== 'user') continue
+      const c = e.message?.content
+      if (!Array.isArray(c)) continue
+      for (const b of c) {
+        if (b?.type === 'tool_result' && b.tool_use_id === toolUseId) return true
+      }
+    } catch (_) {}
+  }
+  return false
+}
+
+function deepEqualJson(a, b) {
+  if (a === b) return true
+  if (typeof a !== typeof b) return false
+  if (a === null || b === null) return a === b
+  if (typeof a !== 'object') return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  if (Array.isArray(a)) {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) if (!deepEqualJson(a[i], b[i])) return false
+    return true
+  }
+  const ka = Object.keys(a), kb = Object.keys(b)
+  if (ka.length !== kb.length) return false
+  for (const k of ka) if (!deepEqualJson(a[k], b[k])) return false
+  return true
+}
+
+/**
  * Walk every assistant entry after `fromLineIndex` and return its content
  * blocks in order: `[{kind:'text', text}, {kind:'tool_use', name, input}]`.
  * Other block types (`thinking`, `image`, ...) are filtered out — only

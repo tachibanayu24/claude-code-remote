@@ -28,7 +28,9 @@ import { CLAUDE_HOME, loadEnv } from '../hooks/lib/env.mjs'
 import {
   aiTitleFromJsonl,
   assistantBlocksAfterFromJsonl,
+  findPendingToolUseInJsonl,
   hasEndTurnAfter,
+  hasToolResultFor,
   jsonlPath,
   lastUserPromptFromJsonl,
 } from '../hooks/lib/jsonl.mjs'
@@ -280,25 +282,44 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     return
   }
 
+  // Bind this approval to the corresponding tool_use_id in JSONL. CC writes
+  // the tool_use block before firing the permission notification, so it
+  // should already be present — but defer (null) and retry from the wait
+  // loop if buffering delays it. The id is what waitLoop tracks against
+  // tool_result to detect "CC moved past this prompt" (allow → tool ran,
+  // deny → error result written).
+  let toolUseId = null
+  try {
+    const jsonl = readFileSync(jsonlPath(cwd, sessionId), 'utf8')
+    toolUseId = findPendingToolUseInJsonl(jsonl, tool_name, input_preview)?.id ?? null
+  } catch (_) {}
+
   // Backend creates the row in pending state but skips the FCM push when
   // ask_delay_ms > 0. We trigger /notify after the delay; if the local
-  // terminal dialog answers first (posttool hook → dismiss), the backend
-  // sees the row is no longer pending and no push is sent.
-  if (notifyAfterMs > 0) {
-    setTimeout(() => {
-      apiPost(`/v1/approvals/${backendId}/notify`, {})
-        .then((r) => { if (!r.ok) log(`notify POST ${request_id}: HTTP ${r.status}`) })
-        .catch((e) => log(`notify POST error ${request_id}: ${e.message ?? e}`))
-    }, notifyAfterMs).unref()
-  }
-
-  pendingApprovals.set(backendId, {
+  // terminal answered first, the wait loop's tool_result check has already
+  // hit /dismiss and cleared notifyTimer, so this branch never fires.
+  // Belt-and-suspenders: re-check JSONL inside the timer too, to close the
+  // race between the wait loop's last poll and the timer firing.
+  const entry = {
     ccRequestId: request_id,
     toolName: tool_name,
     inputPreview: input_preview,
     cwd,
+    sessionId,
+    toolUseId,
+    notifyTimer: null,
     expiresAt: Date.now() + APPROVAL_TIMEOUT_MS,
-  })
+  }
+  if (notifyAfterMs > 0) {
+    entry.notifyTimer = setTimeout(async () => {
+      if (await maybeDismissFromJsonl(backendId, entry)) return
+      apiPost(`/v1/approvals/${backendId}/notify`, {})
+        .then((r) => { if (!r.ok) log(`notify POST ${request_id}: HTTP ${r.status}`) })
+        .catch((e) => log(`notify POST error ${request_id}: ${e.message ?? e}`))
+    }, notifyAfterMs)
+    entry.notifyTimer.unref()
+  }
+  pendingApprovals.set(backendId, entry)
 })
 
 // ---------- /v1/wait long-poll loop ----------
@@ -318,9 +339,41 @@ function sweepExpiredPending() {
   for (const [backendId, entry] of pendingApprovals) {
     if (entry.expiresAt <= now) {
       log(`timeout ${entry.ccRequestId} — local dialog will handle`)
+      if (entry.notifyTimer) clearTimeout(entry.notifyTimer)
       pendingApprovals.delete(backendId)
     }
   }
+}
+
+/**
+ * Check whether the CLI has already moved past this approval by inspecting
+ * JSONL for a tool_result on the bound tool_use_id. If yes, expire the
+ * backend row (which fans out a `decision:'expired'` resolve push so the
+ * phone clears any in-flight UI) and drop the pending entry. Returns true
+ * iff dismiss happened.
+ *
+ * Called from both the wait loop (early dismiss, runs every ~5s) and from
+ * inside the /notify setTimeout (final guard before the FCM fires).
+ */
+async function maybeDismissFromJsonl(backendId, entry) {
+  let jsonl = null
+  try { jsonl = readFileSync(jsonlPath(entry.cwd, entry.sessionId), 'utf8') } catch (_) {}
+  if (!jsonl) return false
+  if (!entry.toolUseId) {
+    entry.toolUseId = findPendingToolUseInJsonl(jsonl, entry.toolName, entry.inputPreview)?.id ?? null
+  }
+  if (!entry.toolUseId) return false
+  if (!hasToolResultFor(jsonl, entry.toolUseId)) return false
+  try {
+    const r = await apiPost(`/v1/approvals/${backendId}/dismiss`, {})
+    if (!r.ok) log(`/dismiss HTTP ${r.status} for ${entry.ccRequestId}`)
+  } catch (e) {
+    log(`/dismiss error for ${entry.ccRequestId}: ${e.message ?? e}`)
+  }
+  if (entry.notifyTimer) clearTimeout(entry.notifyTimer)
+  pendingApprovals.delete(backendId)
+  log(`dismissed ${entry.ccRequestId} (CLI answered before delay)`)
+  return true
 }
 
 /**
@@ -347,6 +400,14 @@ async function waitLoop() {
       // Older CC builds without ppid file land here — nothing to do but wait.
       await sleep(2_000)
       continue
+    }
+    // Early-dismiss path: if the user answered locally, the JSONL already
+    // shows a tool_result on the bound tool_use_id. Drop these *before* we
+    // commit the heartbeat so phone state and backend state stay aligned.
+    for (const [backendId, entry] of [...pendingApprovals]) {
+      try { await maybeDismissFromJsonl(backendId, entry) } catch (e) {
+        log(`maybeDismiss error: ${e.message ?? e}`)
+      }
     }
     const inflight = snapshot.current_prompt != null
     const maxMs = inflight ? WAIT_INFLIGHT_MAX_MS : WAIT_IDLE_MAX_MS
@@ -452,6 +513,7 @@ async function handleVerdictEvent(ev) {
       params: { request_id: entry.ccRequestId, behavior: ev.behavior },
     })
     log(`emitted verdict ${entry.ccRequestId}=${ev.behavior}`)
+    if (entry.notifyTimer) clearTimeout(entry.notifyTimer)
     pendingApprovals.delete(ev.request_id)
   } catch (e) {
     // keep entry in pendingApprovals; next wait round will redeliver
