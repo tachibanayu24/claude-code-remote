@@ -201,4 +201,24 @@ app.get('/:sid/turns', async (c) => {
   })
 })
 
+app.post('/:sid/close', async (c) => {
+  // phone から「このセッションを閉じる」 要求。 D1 に marker を立てるだけで、
+  // 実際の kill は channel.mjs が /v1/wait の events 経由で受け取り
+  // process.kill(ppid, 'SIGTERM') する。 既に立っているなら no-op (idempotent)。
+  const sid = c.req.param('sid')
+  if (!sid) return c.json({ error: 'session_id required' }, 400)
+  const result = await c.env.DB.prepare(
+    `UPDATE sessions SET close_requested_at = ?
+     WHERE session_id = ? AND close_requested_at IS NULL`,
+  ).bind(nowSec(), sid).run()
+  if ((result.meta?.changes ?? 0) === 0) {
+    const existing = await c.env.DB.prepare(
+      'SELECT session_id FROM sessions WHERE session_id = ?'
+    ).bind(sid).first<{ session_id: string }>()
+    if (!existing) return c.json({ error: 'not found' }, 404)
+    return c.json({ ok: true, already_requested: true })
+  }
+  return c.json({ ok: true })
+})
+
 export default app

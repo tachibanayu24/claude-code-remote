@@ -112,7 +112,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         startDetailPolling(sessionId)
     }
 
-    fun closeSession() {
+    fun exitDetail() {
         if (_uiState.value.screen !is Screen.Detail) return
         _uiState.update { it.copy(screen = Screen.Home, selectedDetail = null) }
         detailPollJob?.cancel()
@@ -182,6 +182,24 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- Home actions ----------
+
+    /**
+     * Phone から「セッションを閉じる」 要求。 backend POST で close marker を立てる
+     * → channel.mjs が /v1/wait events で type=close を受け取って parent CC に
+     * SIGTERM。 POST を await してから Home 遷移する順序にすることで、 marker が
+     * サーバーに確定する前に Home に戻って空振りするケースを排除する。 一覧
+     * refresh はその後 (heartbeat は CC が死ぬまで更新され続けるので即時には
+     * 一覧から消えないが、 heartbeat タイムアウトで自然に消える)。
+     */
+    fun requestCloseSession(sessionId: String) {
+        viewModelScope.launch {
+            val client = BackendClientHolder.current() ?: return@launch
+            client.closeSession(sessionId)
+            exitDetail()
+            val list = client.listSessions()
+            _uiState.update { it.copy(sessions = list) }
+        }
+    }
 
     fun refreshSessions() {
         viewModelScope.launch {

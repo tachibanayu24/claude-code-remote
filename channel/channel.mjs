@@ -314,6 +314,7 @@ async function waitLoop() {
       try {
         if (ev.type === 'prompt') await handlePromptEvent(ev)
         else if (ev.type === 'verdict') await handleVerdictEvent(ev)
+        else if (ev.type === 'close') handleCloseEvent()
       } catch (e) {
         log(`event handler error: ${e.message ?? e}`)
       }
@@ -346,6 +347,26 @@ async function handlePromptEvent(ev) {
     log(`injected prompt ${ev.id}:\n${ev.text}`)
   } catch (e) {
     log(`prompt emit failed AFTER claim ${ev.id}: ${e.message ?? e}`)
+  }
+}
+
+/**
+ * Phone から「閉じる」 要求。 channel.mjs は CC の子プロセスなので、
+ * parent (= CC 本体) に SIGTERM を送れば CC が gracefully 終了し、 結果として
+ * channel.mjs (子) も stdin EOF で自然終了する。
+ *
+ * Backend 側の close_requested_at marker は wait.ts が close event を emit する
+ * 同じ round で NULL に戻す (single-fire) ので、 この event は 1 セッションに
+ * つき最大 1 回しか届かない。 `claude --continue` で同 session_id を再利用
+ * しても過去 marker による即死は起きない。 再度閉じたい場合は phone が
+ * POST /v1/sessions/:sid/close を再送して marker を立て直す。
+ */
+function handleCloseEvent() {
+  log(`close requested — sending SIGTERM to parent CC (pid=${process.ppid})`)
+  try {
+    process.kill(process.ppid, 'SIGTERM')
+  } catch (e) {
+    log(`SIGTERM failed: ${e.message ?? e}`)
   }
 }
 

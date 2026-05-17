@@ -83,6 +83,12 @@ class BackendClient(private val config: Config) {
         res.status.isSuccess()
     }.getOrDefault(false)
 
+    /** 該当 session の channel.mjs に SIGTERM 経由で CC ごと終了させる要求。 */
+    suspend fun closeSession(sessionId: String): Boolean = runCatching {
+        val res: HttpResponse = http.post("${config.backendUrl}/v1/sessions/${encodePathSegment(sessionId)}/close")
+        res.status.isSuccess()
+    }.getOrDefault(false)
+
     suspend fun listSessions(): List<Session> = runCatching {
         val res: HttpResponse = http.get("${config.backendUrl}/v1/sessions")
         if (!res.status.isSuccess()) emptyList() else res.body<SessionsResponse>().sessions

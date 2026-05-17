@@ -65,7 +65,7 @@ class MainActivity : ComponentActivity() {
                     // returns to home instead of finishing the activity.
                     BackHandler(enabled = state.screen != Screen.Home) {
                         when (state.screen) {
-                            is Screen.Detail -> vm.closeSession()
+                            is Screen.Detail -> vm.exitDetail()
                             Screen.Settings -> vm.closeSettings()
                             Screen.Home -> Unit
                         }
@@ -91,10 +91,11 @@ class MainActivity : ComponentActivity() {
                         is Screen.Detail -> SessionDetailScreen(
                             detail = state.selectedDetail,
                             isSendingPrompt = state.isSendingPrompt,
-                            onBack = vm::closeSession,
+                            onBack = vm::exitDetail,
                             onSendPrompt = { text -> vm.sendPrompt(screen.sessionId, text) },
                             onDecideApproval = vm::decideApproval,
                             onAnswerQuestion = vm::answerQuestion,
+                            onCloseSession = { vm.requestCloseSession(screen.sessionId) },
                         )
                         Screen.Settings -> SettingsScreen(
                             config = current,

@@ -34,9 +34,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -45,6 +49,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -94,6 +99,7 @@ fun SessionDetailScreen(
     onSendPrompt: (String) -> Unit,
     onDecideApproval: (approvalId: String, decision: String, addToAllowlist: Boolean) -> Unit,
     onAnswerQuestion: (questionId: String, answers: JsonObject) -> Unit,
+    onCloseSession: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -112,7 +118,6 @@ fun SessionDetailScreen(
         val titleText = aiTitle
             ?: sessionId?.let { "#${it.takeLast(6)}" }
             ?: ""
-        TopBar(title = titleText, onBack = onBack)
 
         // Backend returns turns newest-first (DESC). Reverse for chat-style
         // chronological order: oldest at top, latest at bottom.
@@ -122,6 +127,35 @@ fun SessionDetailScreen(
         val currentPrompt = detail?.session?.current_prompt?.takeIf { it.isNotBlank() }
         val currentBlocks = detail?.session?.current_blocks.orEmpty()
         val hasInFlight = currentPrompt != null
+
+        // Re-evaluate "is the channel.mjs alive?" once a second so menu /
+        // input bar enable state stays in sync, not only when a new heartbeat
+        // bumps `detail`.
+        val sessionIsLive by produceState(initialValue = true, key1 = detail?.session?.last_heartbeat) {
+            val lastHeartbeat = detail?.session?.last_heartbeat
+            if (lastHeartbeat == null) {
+                value = true
+                return@produceState
+            }
+            while (true) {
+                value = System.currentTimeMillis() / 1000 - lastHeartbeat < SESSION_LIVE_TTL_SEC
+                delay(1_000)
+            }
+        }
+        // 「閉じる」 dialog の文言切り替え用。 null = idle (graceful 終了),
+        // 非 null = in-flight (強制終了の警告を表示)。
+        val inflightLabel: String? = when {
+            hasInFlight -> "ターン処理中"
+            pendingApprovals.isNotEmpty() || pendingQuestions.isNotEmpty() -> "承認待ち"
+            else -> null
+        }
+        TopBar(
+            title = titleText,
+            onBack = onBack,
+            canClose = sessionIsLive,
+            inflightLabel = inflightLabel,
+            onCloseSession = onCloseSession,
+        )
         // Backend also returns recently-delivered prompts so the queued bubble
         // doesn't flicker off during the gap between channel.mjs ack and the
         // heartbeat that picks the prompt up as current_prompt. Drop any
@@ -212,20 +246,6 @@ fun SessionDetailScreen(
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        // Re-evaluate "is the channel.mjs alive?" once a second so the input
-        // bar enables/disables in real time, not only when a new heartbeat
-        // bumps detail.
-        val sessionIsLive by produceState(initialValue = true, key1 = detail?.session?.last_heartbeat) {
-            val lastHeartbeat = detail?.session?.last_heartbeat
-            if (lastHeartbeat == null) {
-                value = true
-                return@produceState
-            }
-            while (true) {
-                value = System.currentTimeMillis() / 1000 - lastHeartbeat < SESSION_LIVE_TTL_SEC
-                delay(1_000)
-            }
-        }
         PromptInputBar(
             isSending = isSendingPrompt,
             isEnabled = sessionIsLive,
@@ -238,7 +258,12 @@ fun SessionDetailScreen(
 private fun TopBar(
     title: String,
     onBack: () -> Unit,
+    canClose: Boolean,
+    inflightLabel: String?,
+    onCloseSession: () -> Unit,
 ) {
+    var menuOpen by remember { mutableStateOf(false) }
+    var showCloseDialog by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -259,7 +284,86 @@ private fun TopBar(
                 fontFamily = FontFamily.Monospace,
             )
         }
+        Spacer(Modifier.weight(1f))
+        // channel.mjs が生きてる (= SIGTERM を届けられる) ときだけ menu を出す。
+        // closed セッションでは marker を立てても消費する側が居ないので意味なし。
+        if (canClose) {
+            Box {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(
+                        imageVector = Icons.Filled.MoreVert,
+                        contentDescription = "メニュー",
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("閉じる") },
+                        onClick = {
+                            menuOpen = false
+                            showCloseDialog = true
+                        },
+                    )
+                }
+            }
+        }
     }
+    if (showCloseDialog) {
+        SessionCloseDialog(
+            sessionLabel = title,
+            inflightLabel = inflightLabel,
+            onConfirm = {
+                showCloseDialog = false
+                onCloseSession()
+            },
+            onDismiss = { showCloseDialog = false },
+        )
+    }
+}
+
+/**
+ * 閉じる確認 dialog。 in-flight (working / awaiting_approval) の場合は
+ * 「処理中だが終了させる」 旨を強調する。 inflightLabel が null なら idle 扱い。
+ */
+@Composable
+private fun SessionCloseDialog(
+    sessionLabel: String,
+    inflightLabel: String?,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val inflight = inflightLabel != null
+    val titleText = if (inflight) "処理中のセッションを閉じる？" else "セッションを閉じる？"
+    val body = buildString {
+        if (sessionLabel.isNotBlank()) {
+            append(sessionLabel)
+            append("\n\n")
+        }
+        if (inflight) {
+            append("CC は現在 ")
+            append(inflightLabel)
+            append(" です。 SIGTERM を送って強制終了します。 ")
+            append("作業途中の jsonl flush が間に合わない可能性があるので、 急ぎでなければ完了を待つことを推奨します。")
+        } else {
+            append("PC の CC プロセスに SIGTERM を送って終了させます。 ")
+            append("(CC は graceful に jsonl を flush して落ちます)")
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(titleText) },
+        text = { Text(body) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(if (inflight) "強制終了" else "閉じる")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("キャンセル") }
+        },
+    )
 }
 
 @Composable

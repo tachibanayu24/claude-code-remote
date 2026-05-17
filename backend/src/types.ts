@@ -105,6 +105,9 @@ export interface WaitRequest {
 export type WaitEvent =
   | { type: 'prompt'; id: string; text: string }
   | { type: 'verdict'; request_id: string; behavior: 'allow' | 'deny'; add_to_allowlist: boolean }
+  // phone から「閉じる」 要求。 channel.mjs は process.kill(ppid, 'SIGTERM')
+  // で CC ごと畳む。
+  | { type: 'close' }
 
 /**
  * AskUserQuestion ツールの tool_input.questions[] の 1 要素。CC が hook に
