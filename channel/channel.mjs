@@ -1,18 +1,22 @@
 #!/usr/bin/env node
-// claude-code-remote channel server.
-// Receives Claude Code permission_request notifications, forwards them to the
-// Cloudflare Workers backend (which fans out FCM pushes to registered Android
-// devices), and long-polls `/v1/wait` for verdicts + queued prompts. The
-// same `/v1/wait` request body doubles as the heartbeat upsert, so one
-// round-trip covers all three flows: permission relay, prompt inject, live
-// progress.
+// claude-code-remote channel server (MCP, 常駐).
 //
-// The local terminal dialog stays open in parallel with the phone push;
-// whichever side answers first wins. JSONL is also inspected each wait tick
-// for an early-dismiss path: if CC has moved past a pending prompt (a
-// tool_result appeared on the bound tool_use_id), expire the backend row
-// before the FCM fires so the phone doesn't get a notification it can't act
-// on.
+// 役割:
+//   ① Approval relay      : CC の permission_request を受け、 backend に POST、
+//                           /v1/wait の long-poll で verdict を取り MCP notify で
+//                           CC に返す。 JSONL 監視で「PC 早勝ち」 を検出して
+//                           /v1/approvals/:id/dismiss も叩く。
+//   ② Prompt inject       : phone が backend に積んだ queued prompt を /v1/wait の
+//                           event 駆動で受け取り、 MCP notify で CC に流す。
+//   ③ Heartbeat / 進捗    : /v1/wait body に jsonl から抽出した current_prompt /
+//                           current_blocks を同梱して backend に upsert。
+//
+// AskUserQuestion (= question relay) は CC が MCP channel に流さないため
+// 当 server は扱わない。 専用 PermissionRequest hook `hooks/ask-user-question.mjs`
+// が per-call で処理する (詳細: docs/architecture.md)。
+//
+// CC の local dialog と phone notification は並列で生き、 先に答えた方が勝つ
+// (first responder wins)。
 //
 // Submodules:
 //   ./lib/api.mjs       — config (BACKEND, SECRET) + apiPost

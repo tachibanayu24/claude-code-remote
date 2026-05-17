@@ -20,11 +20,9 @@
 //   - hook の return を待たずに CLI dialog は並行表示される
 //   - hook が遅れて answers を返しても、CLI が早勝ちしていれば無視 (副作用なし)
 
-import { readFileSync } from 'node:fs'
 import { loadEnv } from './lib/env.mjs'
 import { apiPost, isConfigured } from '../channel/lib/api.mjs'
 import { getSessionLabel, readPpidSession } from '../channel/lib/session.mjs'
-import { findPendingToolUseInJsonl, jsonlPath } from './lib/jsonl.mjs'
 
 const log = (msg) => process.stderr.write(`cc-remote-aq: ${msg}\n`)
 
@@ -72,23 +70,12 @@ if (!Array.isArray(questions) || questions.length === 0) {
   exitSilent('no questions in tool_input')
 }
 
-// PermissionRequest hook input には tool_use_id が含まれないので、JSONL から
-// 自前で引く (channel.mjs の早期 dismiss path と同じ流儀)。null のままでも
-// long-poll は機能する — channel.mjs 側が JSONL 監視で tool_result を検出
-// するための tool_use_id は backend に保存していないため、channel.mjs は
-// session の pending questions を毎 wait loop で取り直す方式で運用する。
 const sess = readPpidSession()
 const sessionId = sess?.sessionId
 const cwd = sess?.cwd ?? process.cwd()
 if (!sessionId) {
   exitSilent('no sessionId (older CC?) — relying on local dialog')
 }
-
-// 質問のプレビュー文字列。channel.mjs の input_preview と対応する位置付け。
-// JSONL の findPendingToolUse は input_preview をキーに引いてくるので、
-// 質問の question 文字列を結合した形を渡す (channel.mjs 側は今回触らない
-// が将来 tool_use_id 連動するならここを揃える)。
-const inputPreview = questions.map((q) => q.question).join('\n')
 
 const projectName = (cwd.split('/').pop() || 'unknown')
 
@@ -121,10 +108,6 @@ try {
   log(`backend POST error: ${e.message ?? e}`)
   exitSilent('backend create error')
 }
-
-// `inputPreview` は将来 tool_use_id 連動のために残してあるが、現状は
-// channel.mjs が session ベースで pending を引くので使わない。ESLint 用に参照。
-void inputPreview
 
 // Long-poll ループ。 hook の budget を超えない範囲で繰り返す。
 while (true) {
