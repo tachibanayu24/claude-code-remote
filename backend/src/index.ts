@@ -4,6 +4,7 @@ import approvals from './routes/approvals'
 import devices from './routes/devices'
 import hooks from './routes/hooks'
 import prompts from './routes/prompts'
+import questions from './routes/questions'
 import sessions from './routes/sessions'
 import settings from './routes/settings'
 import wait from './routes/wait'
@@ -17,6 +18,7 @@ app.use('/v1/*', bearerAuth)
 
 app.route('/v1/devices', devices)
 app.route('/v1/approvals', approvals)
+app.route('/v1/questions', questions)
 app.route('/v1/hook', hooks)
 app.route('/v1/sessions', sessions)
 app.route('/v1/settings', settings)

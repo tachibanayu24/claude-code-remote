@@ -100,11 +100,47 @@ export interface WaitRequest {
   current_prompt?: string | null
   current_blocks?: Block[] | null
   pending_request_ids?: string[]
+  // AskUserQuestion 用に hook が POST した row のうち、channel.mjs が JSONL
+  // 監視中の question ids。 backend は response に「現在 session の pending
+  // questions」を返すので、 channel.mjs はこれを使って早期 dismiss を判断する。
+  pending_question_ids?: string[]
 }
 
 export type WaitEvent =
   | { type: 'prompt'; id: string; text: string }
   | { type: 'verdict'; request_id: string; behavior: 'allow' | 'deny'; add_to_allowlist: boolean }
+
+/**
+ * AskUserQuestion ツールの tool_input.questions[] の 1 要素。CC が hook に
+ * 渡してくる schema をそのまま受け取って backend / Android に転送する。
+ */
+export interface AskQuestion {
+  question: string
+  header: string
+  multiSelect: boolean
+  options: Array<{ label: string; description?: string }>
+}
+
+export interface QuestionCreateRequest {
+  session_id: string
+  cwd?: string
+  project_name: string
+  session_label?: string
+  questions: AskQuestion[]
+}
+
+/**
+ * `answers` の key は AskQuestion.question 文字列、value は selected label or
+ * (multiSelect=true なら) label の array。spike で確定した CC 受理形式。
+ */
+export interface QuestionRespondRequest {
+  answers: Record<string, string | string[]>
+  device_id?: string
+}
+
+export type QuestionWaitEvent =
+  | { type: 'answers'; answers: Record<string, string | string[]> }
+  | { type: 'dismissed' }
 
 export interface SettingsRow {
   ask_delay_ms: number

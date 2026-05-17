@@ -27,6 +27,7 @@ import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 
 import {
+  countAskUserQuestionStatus,
   findPendingToolUseInJsonl,
   hasToolResultFor,
   jsonlPath,
@@ -94,6 +95,21 @@ const PermissionRequestSchema = z.object({
  * or APPROVAL_TIMEOUT_MS sweep so /v1/wait isn't asked to track ids forever.
  */
 const pendingApprovals = new Map()
+
+/**
+ * AskUserQuestion 用の早期 dismiss 機構。 PermissionRequest hook の input には
+ * tool_use_id が含まれないので、 個別の question ↔ tool_use の binding は
+ * channel.mjs では持てない。 代わりに「JSONL 上の AskUserQuestion tool_result
+ * 数」を baseline からの delta で追跡し、 増分があったら backend に
+ * /dismiss-next で「最古 pending を delta 個 expire」を投げる流儀。
+ *
+ * baseline = channel 起動時の resolved 数。 これ以降の新規 resolved だけが
+ * 「CLI 早勝ち」候補。 phone 早勝ち (= hook が answer を返す) ケースでは
+ * backend の status が先に resolved になっているので /dismiss-next は no-op。
+ */
+let lastSeenAskResolvedCount = 0
+/** wait response 由来の「現在 backend が pending と把握している question id 群」 */
+const pendingQuestionIds = new Set()
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -249,6 +265,15 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
  */
 async function waitLoop() {
   let backoffMs = 1_000
+  // 起動時の AskUserQuestion resolved 数を baseline にする。 channel が走り
+  // 始める前に既に解決済みの AskUserQuestion は CLI 早勝ち判定に含めない。
+  try {
+    const sess = readPpidSession()
+    if (sess?.sessionId) {
+      const jsonl = readFileSync(jsonlPath(sess.cwd, sess.sessionId), 'utf8')
+      lastSeenAskResolvedCount = countAskUserQuestionStatus(jsonl).resolved
+    }
+  } catch (_) {}
   while (true) {
     if (!isConfigured()) {
       await sleep(WAIT_BACKOFF_MAX_MS)
@@ -261,17 +286,40 @@ async function waitLoop() {
       await sleep(2_000)
       continue
     }
-    // Early-dismiss path: if the user answered locally, the JSONL already
-    // shows a tool_result on the bound tool_use_id. Drop these *before* we
-    // commit the heartbeat so phone state and backend state stay aligned.
-    // One JSONL read shared across all pending checks.
-    if (pendingApprovals.size > 0) {
-      let jsonl = null
+    // Early-dismiss path (approval + question 共通): JSONL を 1 回読んで両者の
+    // CLI 早勝ち判定を走らせる。 approval は tool_use_id 個別 binding、
+    // question は AskUserQuestion resolved 数の delta で扱う。
+    let jsonl = null
+    if (pendingApprovals.size > 0 || pendingQuestionIds.size > 0) {
       try { jsonl = readFileSync(jsonlPath(snapshot.cwd, snapshot.session_id), 'utf8') } catch (_) {}
+    }
+    if (pendingApprovals.size > 0) {
       for (const [backendId, entry] of [...pendingApprovals]) {
         try { await maybeDismissFromJsonl(backendId, entry, jsonl) } catch (e) {
           log(`maybeDismiss error: ${e.message ?? e}`)
         }
+      }
+    }
+    if (pendingQuestionIds.size > 0 && jsonl) {
+      const { resolved } = countAskUserQuestionStatus(jsonl)
+      const delta = resolved - lastSeenAskResolvedCount
+      if (delta > 0) {
+        // backend に oldest-first で N 件 expire を投げる。 phone 早勝ちで
+        // backend が既に resolved に遷移していれば no-op (count=0 が返る)。
+        const count = Math.min(delta, pendingQuestionIds.size)
+        try {
+          const r = await apiPost(`/v1/questions/dismiss-next/${snapshot.session_id}?count=${count}`, {})
+          if (r.ok) {
+            const j = await r.json()
+            const dismissed = Number(j.dismissed) || 0
+            log(`questions dismiss-next ${dismissed}/${count} (resolved delta=${delta})`)
+          } else {
+            log(`/dismiss-next HTTP ${r.status}`)
+          }
+        } catch (e) {
+          log(`/dismiss-next error: ${e.message ?? e}`)
+        }
+        lastSeenAskResolvedCount = resolved
       }
     }
     const inflight = snapshot.current_prompt != null
@@ -284,6 +332,7 @@ async function waitLoop() {
       current_prompt: snapshot.current_prompt,
       current_blocks: snapshot.current_blocks,
       pending_request_ids: [...pendingApprovals.keys()],
+      pending_question_ids: [...pendingQuestionIds],
     }
     let data
     try {
@@ -312,6 +361,14 @@ async function waitLoop() {
         else if (ev.type === 'verdict') await handleVerdictEvent(ev)
       } catch (e) {
         log(`event handler error: ${e.message ?? e}`)
+      }
+    }
+    // backend が ground truth。 wait response の pending_question_ids を Set
+    // に反映 (新規 hook 起動の発見 + 既に解決された ID の自然消滅)。
+    if (Array.isArray(data.pending_question_ids)) {
+      pendingQuestionIds.clear()
+      for (const id of data.pending_question_ids) {
+        if (typeof id === 'string' && id) pendingQuestionIds.add(id)
       }
     }
   }

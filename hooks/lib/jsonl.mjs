@@ -326,6 +326,54 @@ export function hasToolResultFor(jsonl, toolUseId) {
   return false
 }
 
+/**
+ * Count assistant `tool_use` blocks for AskUserQuestion and how many of them
+ * already have a paired `tool_result`. channel.mjs uses this to detect when
+ * CC has answered a question locally (CLI early-resolve) without needing to
+ * bind to a specific tool_use_id — a delta in `resolved` between wait rounds
+ * means "one more pending question can be dismissed from the phone".
+ */
+export function countAskUserQuestionStatus(jsonl) {
+  if (!jsonl) return { resolved: 0, pending: 0, total: 0 }
+  const lines = jsonl.split('\n')
+  const resulted = new Set()
+  const toolUseIds = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.includes('"type":"tool_result"')) {
+      try {
+        const e = JSON.parse(line)
+        if (e.type === 'user') {
+          const c = e.message?.content
+          if (Array.isArray(c)) {
+            for (const b of c) {
+              if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+                resulted.add(b.tool_use_id)
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    if (line.includes('"type":"tool_use"')) {
+      try {
+        const e = JSON.parse(line)
+        if (e.type !== 'assistant') continue
+        const c = e.message?.content
+        if (!Array.isArray(c)) continue
+        for (const b of c) {
+          if (b?.type === 'tool_use' && typeof b.id === 'string' && b.name === 'AskUserQuestion') {
+            toolUseIds.push(b.id)
+          }
+        }
+      } catch (_) {}
+    }
+  }
+  let resolved = 0
+  for (const id of toolUseIds) if (resulted.has(id)) resolved++
+  return { resolved, pending: toolUseIds.length - resolved, total: toolUseIds.length }
+}
+
 function deepEqualJson(a, b) {
   if (a === b) return true
   if (typeof a !== typeof b) return false

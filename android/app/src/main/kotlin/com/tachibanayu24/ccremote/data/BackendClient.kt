@@ -73,6 +73,16 @@ class BackendClient(private val config: Config) {
         res.status.isSuccess()
     }.getOrDefault(false)
 
+    suspend fun respondQuestion(
+        requestId: String,
+        answers: kotlinx.serialization.json.JsonObject,
+    ): Boolean = runCatching {
+        val res: HttpResponse = http.post("${config.backendUrl}/v1/questions/$requestId/respond") {
+            setBody(QuestionRespondRequest(answers = answers, device_id = config.deviceId))
+        }
+        res.status.isSuccess()
+    }.getOrDefault(false)
+
     suspend fun listSessions(): List<Session> = runCatching {
         val res: HttpResponse = http.get("${config.backendUrl}/v1/sessions")
         if (!res.status.isSuccess()) emptyList() else res.body<SessionsResponse>().sessions

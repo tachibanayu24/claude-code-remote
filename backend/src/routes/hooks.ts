@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { dismissPendingApprovals } from '../approvals'
+import { dismissPendingQuestionsBySession } from '../questions'
 import { nowSec, readJson } from '../db'
 import { basename, formatElapsed, previewLine } from '../format'
 import { notifyInfo } from '../push'
@@ -30,10 +31,16 @@ app.post('/stop', async (c) => {
     : null
   const dryRun = body.dry_run === true
 
-  // Dismiss only this session's pending approvals — leave concurrent CCs in
-  // the same cwd untouched. Skips when sessionId is empty (very old hook
-  // payload) so we don't accidentally expire every row.
-  const dismissed = dryRun ? 0 : await dismissPendingApprovals(c.env.DB, c.env, sessionId)
+  // Dismiss only this session's pending approvals + questions — leave
+  // concurrent CCs in the same cwd untouched. Skips when sessionId is empty
+  // (very old hook payload) so we don't accidentally expire every row.
+  const [dismissed, dismissedQuestions] = dryRun
+    ? [0, 0]
+    : await Promise.all([
+        dismissPendingApprovals(c.env.DB, c.env, sessionId),
+        dismissPendingQuestionsBySession(c.env.DB, c.env, sessionId),
+      ])
+  void dismissedQuestions  // 数値は response に乗せないが no-op 防止のため await
 
   // Persist the turn snapshot regardless of FCM threshold — the detail screen
   // wants every turn, not just the long ones.
@@ -105,8 +112,11 @@ app.post('/posttool', async (c) => {
   // Reject empty session_id: dismissPendingApprovals('') would expire pending
   // rows for *every* session, which collapses the multi-session use case.
   if (!body?.session_id) return c.json({ error: 'session_id required' }, 400)
-  const dismissed = await dismissPendingApprovals(c.env.DB, c.env, body.session_id)
-  return c.json({ ok: true, dismissed })
+  const [dismissed, dismissedQuestions] = await Promise.all([
+    dismissPendingApprovals(c.env.DB, c.env, body.session_id),
+    dismissPendingQuestionsBySession(c.env.DB, c.env, body.session_id),
+  ])
+  return c.json({ ok: true, dismissed, dismissed_questions: dismissedQuestions })
 })
 
 export default app

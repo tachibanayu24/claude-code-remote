@@ -42,6 +42,12 @@ class CcRemoteMessagingService : FirebaseMessagingService() {
                     NotificationManagerCompat.from(applicationContext).cancel(requestId.hashCode())
                 }
             }
+            "question_request" -> NotificationFactory.showQuestion(applicationContext, data)
+            "question_resolved" -> {
+                data["request_id"]?.let { requestId ->
+                    NotificationManagerCompat.from(applicationContext).cancel(requestId.hashCode())
+                }
+            }
             "info" -> NotificationFactory.showInfo(applicationContext, data)
         }
         // Every recognized event changes session state visible to the widget

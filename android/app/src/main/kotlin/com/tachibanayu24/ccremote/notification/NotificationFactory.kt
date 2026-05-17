@@ -67,6 +67,29 @@ object NotificationFactory {
         }
     }
 
+    fun showQuestion(context: Context, data: Map<String, String>) {
+        val payload = QuestionPayload.fromFcm(data) ?: return
+        val notificationId = payload.notificationId
+
+        val tap = questionPending(context, data, requestCode = notificationId)
+        val builder = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
+            .setSmallIcon(R.drawable.ic_clawd)
+            .setContentTitle(payload.title)
+            .setContentText(payload.notificationBody)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(payload.notificationBody))
+            .setSubText(payload.subText)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_EVENT)
+            .setAutoCancel(true)
+            .setContentIntent(tap)
+
+        try {
+            NotificationManagerCompat.from(context).notify(notificationId, builder.build())
+        } catch (_: SecurityException) {
+            // POST_NOTIFICATIONS not granted on Android 13+
+        }
+    }
+
     fun showInfo(context: Context, data: Map<String, String>) {
         val title = data["title"] ?: "claude-code-remote"
         val body = data["body"].orEmpty()
@@ -119,6 +142,23 @@ object NotificationFactory {
      * the session detail screen for `sessionId`. If sessionId is missing
      * (older payload or test push), fall back to the launcher behaviour.
      */
+    /**
+     * 質問通知のタップ intent。 `QuestionActivity` を起動して、 FCM data の
+     * 必要フィールドを Intent extra で渡す (Activity が自分で payload を
+     * 再構築する)。 通知 ID も渡して回答後に消せるように。
+     */
+    private fun questionPending(context: Context, data: Map<String, String>, requestCode: Int): PendingIntent {
+        val intent = Intent(context, com.tachibanayu24.ccremote.ui.QuestionActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            putExtra("request_id", data["request_id"].orEmpty())
+            putExtra("session_id", data["session_id"].orEmpty())
+            putExtra("project", data["project"].orEmpty())
+            putExtra("session_label", data["session_label"].orEmpty())
+            putExtra("questions", data["questions"].orEmpty())
+        }
+        return PendingIntent.getActivity(context, requestCode, intent, PENDING_FLAGS)
+    }
+
     private fun openSessionPending(context: Context, sessionId: String, requestCode: Int): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP

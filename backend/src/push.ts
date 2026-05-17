@@ -75,6 +75,24 @@ export async function notifyApprovalResolved(
   return fanOut(env, db, tokens, { type: 'approval_resolved', ...data }, 'approval_resolved')
 }
 
+export async function notifyQuestionRequest(
+  env: FcmEnv,
+  db: D1Database,
+  data: Record<string, string>,
+): Promise<number> {
+  const tokens = await listFcmTokens(db)
+  return fanOut(env, db, tokens, { type: 'question_request', ...data }, 'question_request')
+}
+
+export async function notifyQuestionResolved(
+  env: FcmEnv,
+  db: D1Database,
+  data: Record<string, string>,
+): Promise<number> {
+  const tokens = await listFcmTokens(db)
+  return fanOut(env, db, tokens, { type: 'question_resolved', ...data }, 'question_resolved')
+}
+
 export async function notifyInfo(
   env: FcmEnv,
   db: D1Database,
