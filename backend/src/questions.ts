@@ -10,7 +10,7 @@
 // supports_always) という 3 個の薄い blob だったが、こちらは AskQuestion[] を
 // そのまま JSON で詰める。Android がこれを decode して UI を組み立てる。
 
-import { nowSec } from './db'
+import { expirePendingBy } from './lifecycle'
 import { notifyQuestionResolved } from './push'
 import type { AskQuestion, Bindings } from './types'
 
@@ -50,19 +50,13 @@ export function questionPushData(args: {
   }
 }
 
-async function expirePendingQuestions(
+async function expireAndNotify(
   db: D1Database,
   env: Bindings,
   where: 'session_id' | 'id',
   value: string,
 ): Promise<string[]> {
-  if (!value) return []
-  const res = await db.prepare(
-    `UPDATE questions SET status = 'expired', resolved_at = ?
-     WHERE status = 'pending' AND ${where} = ?
-     RETURNING id`,
-  ).bind(nowSec(), value).all<{ id: string }>()
-  const ids = (res.results ?? []).map((r) => r.id)
+  const ids = await expirePendingBy(db, 'questions', where, value)
   if (ids.length === 0) return ids
   await Promise.all(ids.map((id) =>
     notifyQuestionResolved(env, db, {
@@ -74,24 +68,11 @@ async function expirePendingQuestions(
   return ids
 }
 
-/** PostToolUse hook path equivalent: expire every pending question for this session. */
+/** PostToolUse hook path: expire every pending question scoped to this session. */
 export async function dismissPendingQuestionsBySession(
   db: D1Database,
   env: Bindings,
   sessionId: string,
 ): Promise<number> {
-  return (await expirePendingQuestions(db, env, 'session_id', sessionId)).length
-}
-
-/**
- * Idempotent expire by id. 残してあるのは将来 channel.mjs が tool_use_id 個別
- * binding で個別 dismiss する余地のため (現状 AskUserQuestion の dismiss は
- * PostToolUse hook の session-wide path に一任しているので呼ばれない)。
- */
-export async function dismissQuestionById(
-  db: D1Database,
-  env: Bindings,
-  id: string,
-): Promise<boolean> {
-  return (await expirePendingQuestions(db, env, 'id', id)).length > 0
+  return (await expireAndNotify(db, env, 'session_id', sessionId)).length
 }

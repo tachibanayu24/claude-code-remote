@@ -7,7 +7,7 @@
 // `routes/hooks.ts` no longer each re-implement the same JSON parse, default
 // fallback, or SQL/notify pair.
 
-import { nowSec } from './db'
+import { expirePendingBy } from './lifecycle'
 import { notifyApprovalResolved } from './push'
 import type { Bindings } from './types'
 
@@ -71,26 +71,17 @@ export function approvalPushData(args: {
 }
 
 /**
- * Atomically transition pending → expired and fan out the resolve push so
- * Android clears any in-flight UI. RETURNING + a single UPDATE avoids the
- * UPDATE-then-SELECT race that could double-push if two callers raced.
- *
- * `where` is constrained to a literal union so the interpolated column name
- * is never user input. `value` is bound as a parameter.
+ * Atomically transition pending → expired, then fan out the resolve push so
+ * Android clears any in-flight UI. SQL は `expirePendingBy` (lifecycle.ts) に
+ * 集約、 こちらは push の追従だけを持つ。
  */
-async function expirePendingApprovals(
+async function expireAndNotify(
   db: D1Database,
   env: Bindings,
   where: 'session_id' | 'id',
   value: string,
 ): Promise<string[]> {
-  if (!value) return []
-  const res = await db.prepare(
-    `UPDATE approvals SET status = 'expired', resolved_at = ?
-     WHERE status = 'pending' AND ${where} = ?
-     RETURNING id`,
-  ).bind(nowSec(), value).all<{ id: string }>()
-  const ids = (res.results ?? []).map((r) => r.id)
+  const ids = await expirePendingBy(db, 'approvals', where, value)
   if (ids.length === 0) return ids
   await Promise.all(ids.map((id) =>
     notifyApprovalResolved(env, db, {
@@ -102,16 +93,13 @@ async function expirePendingApprovals(
   return ids
 }
 
-/**
- * PostToolUse hook path: expire every pending approval scoped to this CC
- * session. Empty sessionId is a no-op — '' would match every row.
- */
+/** PostToolUse hook path: expire every pending approval scoped to this session. */
 export async function dismissPendingApprovals(
   db: D1Database,
   env: Bindings,
   sessionId: string,
 ): Promise<number> {
-  return (await expirePendingApprovals(db, env, 'session_id', sessionId)).length
+  return (await expireAndNotify(db, env, 'session_id', sessionId)).length
 }
 
 /**
@@ -124,5 +112,5 @@ export async function dismissApprovalById(
   env: Bindings,
   id: string,
 ): Promise<boolean> {
-  return (await expirePendingApprovals(db, env, 'id', id)).length > 0
+  return (await expireAndNotify(db, env, 'id', id)).length > 0
 }

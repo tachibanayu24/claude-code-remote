@@ -1,5 +1,20 @@
+// FCM fan-out。 全 device に同じ data payload を撒き、 永続的に invalid な
+// token は devices テーブルから自動 prune する。
+//
+// 設計: 旧 API では「タイプごとの notify*Request / *Resolved 関数」が並んでいたが、
+// 中身は `pushNotification(type, data)` で済む。 routes は具体の type 名で呼びたい
+// ので thin wrapper を用意して命名は保つ — 利用箇所の grep は引き続き効く。
+
 import { FcmInvalidTokenError, sendFcm } from './fcm'
 import type { FcmEnv } from './types'
+
+/** FCM data の `type` 既定値。 Android 側 dispatcher で switch される識別子。 */
+export type PushType =
+  | 'approval_request'
+  | 'approval_resolved'
+  | 'question_request'
+  | 'question_resolved'
+  | 'info'
 
 async function listFcmTokens(db: D1Database): Promise<string[]> {
   const rows = await db
@@ -8,10 +23,7 @@ async function listFcmTokens(db: D1Database): Promise<string[]> {
   return (rows.results ?? []).map((r) => r.fcm_token)
 }
 
-/**
- * Bulk-prune tokens that FCM has rejected as permanently invalid. Single
- * statement using `IN (?, ?, ...)` so we don't fan out N DELETEs.
- */
+/** Bulk-prune tokens that FCM has rejected as permanently invalid. */
 async function pruneInvalidTokens(db: D1Database, tokens: string[]): Promise<void> {
   if (tokens.length === 0) return
   const placeholders = tokens.map(() => '?').join(',')
@@ -22,20 +34,20 @@ async function pruneInvalidTokens(db: D1Database, tokens: string[]): Promise<voi
 }
 
 /**
- * Fan-out to every registered device. Returns the count that *successfully*
- * received the push (not the count attempted) so callers report a meaningful
- * `notified` value. Tokens that FCM rejects as permanently invalid are
- * pruned from the devices table so we don't keep retrying them forever.
+ * 全 device に FCM data push を撒く。 返値は成功した送信件数。
+ * `UNREGISTERED` などの永続的失敗は devices から prune される。
+ * 1 件でも成功すれば push は配送済みとみなす運用。
  */
-async function fanOut(
+export async function pushNotification(
   env: FcmEnv,
   db: D1Database,
-  tokens: string[],
+  type: PushType,
   data: Record<string, string>,
-  errLabel: string,
 ): Promise<number> {
+  const tokens = await listFcmTokens(db)
+  const payload = { type, ...data }
   const results = await Promise.allSettled(
-    tokens.map((token) => sendFcm(env, { token, data }))
+    tokens.map((token) => sendFcm(env, { token, data: payload }))
   )
   let success = 0
   const invalidTokens: string[] = []
@@ -47,57 +59,29 @@ async function fanOut(
     }
     const reason = r.reason
     if (reason instanceof FcmInvalidTokenError) {
-      console.warn(`FCM ${errLabel} prune ${reason.token.slice(0, 12)}…: ${reason.message}`)
+      console.warn(`FCM ${type} prune ${reason.token.slice(0, 12)}…: ${reason.message}`)
       invalidTokens.push(reason.token)
       continue
     }
-    console.error(`FCM ${errLabel} failed`, reason instanceof Error ? reason.message : reason)
+    console.error(`FCM ${type} failed`, reason instanceof Error ? reason.message : reason)
   }
   await pruneInvalidTokens(db, invalidTokens)
   return success
 }
 
-export async function notifyApprovalRequest(
-  env: FcmEnv,
-  db: D1Database,
-  data: Record<string, string>,
-): Promise<number> {
-  const tokens = await listFcmTokens(db)
-  return fanOut(env, db, tokens, { type: 'approval_request', ...data }, 'approval_request')
-}
+// ---- thin wrappers (call site の grep 性と arity 統一のため) ----
 
-export async function notifyApprovalResolved(
-  env: FcmEnv,
-  db: D1Database,
-  data: Record<string, string>,
-): Promise<number> {
-  const tokens = await listFcmTokens(db)
-  return fanOut(env, db, tokens, { type: 'approval_resolved', ...data }, 'approval_resolved')
-}
+export const notifyApprovalRequest = (env: FcmEnv, db: D1Database, data: Record<string, string>) =>
+  pushNotification(env, db, 'approval_request', data)
 
-export async function notifyQuestionRequest(
-  env: FcmEnv,
-  db: D1Database,
-  data: Record<string, string>,
-): Promise<number> {
-  const tokens = await listFcmTokens(db)
-  return fanOut(env, db, tokens, { type: 'question_request', ...data }, 'question_request')
-}
+export const notifyApprovalResolved = (env: FcmEnv, db: D1Database, data: Record<string, string>) =>
+  pushNotification(env, db, 'approval_resolved', data)
 
-export async function notifyQuestionResolved(
-  env: FcmEnv,
-  db: D1Database,
-  data: Record<string, string>,
-): Promise<number> {
-  const tokens = await listFcmTokens(db)
-  return fanOut(env, db, tokens, { type: 'question_resolved', ...data }, 'question_resolved')
-}
+export const notifyQuestionRequest = (env: FcmEnv, db: D1Database, data: Record<string, string>) =>
+  pushNotification(env, db, 'question_request', data)
 
-export async function notifyInfo(
-  env: FcmEnv,
-  db: D1Database,
-  data: Record<string, string>,
-): Promise<number> {
-  const tokens = await listFcmTokens(db)
-  return fanOut(env, db, tokens, { type: 'info', ...data }, 'info')
-}
+export const notifyQuestionResolved = (env: FcmEnv, db: D1Database, data: Record<string, string>) =>
+  pushNotification(env, db, 'question_resolved', data)
+
+export const notifyInfo = (env: FcmEnv, db: D1Database, data: Record<string, string>) =>
+  pushNotification(env, db, 'info', data)

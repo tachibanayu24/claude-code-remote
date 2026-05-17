@@ -10,7 +10,6 @@ import { Hono } from 'hono'
 import { nowSec, readJson } from '../db'
 import { notifyQuestionRequest, notifyQuestionResolved } from '../push'
 import {
-  dismissQuestionById,
   encodeQuestionsBlob,
   parseQuestionsBlob,
   questionPushData,
@@ -111,14 +110,6 @@ app.post('/:id/notify', async (c) => {
   await c.env.DB.prepare('UPDATE questions SET notified_at = ? WHERE id = ?')
     .bind(nowSec(), id).run()
   return c.json({ ok: true, notified })
-})
-
-app.post('/:id/dismiss', async (c) => {
-  // channel.mjs path: JSONL で AskUserQuestion の tool_result を検出した
-  // ときに「もう phone には不要」を伝えるための idempotent expire。
-  const id = c.req.param('id')
-  const dismissed = await dismissQuestionById(c.env.DB, c.env, id)
-  return c.json({ ok: true, dismissed })
 })
 
 app.post('/:id/respond', async (c) => {
