@@ -9,17 +9,14 @@
 - iOS は対象外（Android のみ）
 - **個人利用、商用配布なし、public repo として GitHub 公開**
 
-## 2. 現状 (2026-05-05)
+## 2. 現状 (2026-05-18)
 
-- MVP に加え **双方向操作** まで完了。承認 / 完了通知の受信、inline 承認、スマホからの prompt 送信、in-flight assistant text の live 表示、通知 tap で詳細画面遷移までエンドツーエンドで動く
+- MVP + **双方向操作** + **AskUserQuestion remote** まで完了。承認 / 質問 / 完了通知の受信、inline approve / answer、スマホからの prompt 送信、in-flight assistant text の live 表示、通知 tap で詳細画面遷移までエンドツーエンドで動く
 - バックエンド: Cloudflare Workers + Hono + D1 + FCM v1 にデプロイ済み (`claude-code-remote.<subdomain>.workers.dev`)
-- Android アプリ: Kotlin + Compose + Material 3。ホーム = セッション一覧（state dot + pull-to-refresh + 凡例）、タップで詳細画面（チャットストリーム + inline 承認 + prompt 入力バー、コピー可能、in-flight pulse）。popup ダイアログは廃止
-- PC 側: hooks (Stop / PostToolUse) と MCP channel server (`channel/channel.mjs`)。channel が permission relay + heartbeat (3s) + queued prompt drain を担う
-- 承認は **Claude Code Channels の permission relay**、追加 prompt は **Channels inbound `notifications/claude/channel`** を採用（PreToolUse ポーリング案は廃止）
-- 全層リファクタ済み（2026-05-05）: backend を route 単位に分割 + `dismissPendingApprovals` を `RETURNING` でアトミック化 + cleanup を `waitUntil`、jsonl パーサーを `hooks/lib/` に集約、Android は `BackendClientHolder` でクライアントを singleton 化 + `UiState` に集約 + `Screen` sealed class でナビ管理 + `FLAG_SECURE` / DataStore backup 除外 / R8 minify。詳細はセッションログ参照
-- phone prompt の queued_command attachment 対応（2026-05-05）: CC が busy 中に届く phone prompt は jsonl に `type:"user"` ではなく `type:"attachment"` `attachment.type:"queued_command"` (`origin.kind:"channel"`) として書かれる。jsonl パーサが両形態を扱うように修正、Stop hook の user_prompt 取りこぼし + heartbeat の current_prompt 抜けを解消
-- セッション per-session_id 化（2026-05-05）: `sessions` テーブルの PK を `cwd` → `session_id` に変更。同一プロジェクトで CC を複数並行運用しても一覧で別エンティティとして表示される。`prompts` も session_id targeting に。API URL は `/v1/sessions/:cwd/...` → `/v1/sessions/:sid/...`、approval/posttool/stop hook の dismiss も session_id 単位。Android 側 navigation も `Screen.Detail(sessionId)` に
-- 設計の経緯は [`sessions/2026-05-04_実装方針確定.md`](./sessions/2026-05-04_実装方針確定.md) と [`sessions/2026-05-05_channels方針確定.md`](./sessions/2026-05-05_channels方針確定.md)、リファクタ詳細は [`sessions/2026-05-05_全層リファクタ.md`](./sessions/2026-05-05_全層リファクタ.md)
+- Android アプリ: Kotlin + Compose + Material 3。ホーム = セッション一覧（state dot + pull-to-refresh + 凡例）、タップで詳細画面（チャットストリーム + inline approve / answer カード + prompt 入力バー、コピー可能、in-flight pulse）。popup ダイアログは廃止
+- PC 側: hooks (Stop / PostToolUse / **PermissionRequest=AskUserQuestion**) と MCP channel server (`channel/channel.mjs`)。channel が approval relay + heartbeat (5〜15s) + queued prompt drain、 専用 hook `hooks/ask-user-question.mjs` が AskUserQuestion を long-poll で per-call relay
+- 承認は **Claude Code Channels の permission relay**、質問は **PermissionRequest hook の `updatedInput.answers`** 経路 (CC が AskUserQuestion を MCP channel に流さない事実が確定したため独立経路、 2026-05-17 spike 参照)、追加 prompt は **Channels inbound `notifications/claude/channel`** を採用
+- 設計の経緯: [`sessions/2026-05-04_実装方針確定.md`](./sessions/2026-05-04_実装方針確定.md) (初期方針)、[`sessions/2026-05-05_channels方針確定.md`](./sessions/2026-05-05_channels方針確定.md) (channels 採用)、[`sessions/2026-05-05_全層リファクタ.md`](./sessions/2026-05-05_全層リファクタ.md) (Phase 3.5)、[`sessions/2026-05-14_全体リファクタリング.md`](./sessions/2026-05-14_全体リファクタリング.md) (Phase 4)、[`sessions/2026-05-17_AskUserQuestion-spike検証と設計.md`](./sessions/2026-05-17_AskUserQuestion-spike検証と設計.md) (AskUserQuestion 設計)
 
 ## 3. アーキテクチャ
 
@@ -51,28 +48,36 @@
 
 **MCP channel server (`channel/channel.mjs`)**
 - Claude Code が stdio で起動する subprocess。3 役割:
-  1. **Permission relay**: Channels の `permission_request` を受け取り backend に POST、approval id でポーリングし `permission` notification を返す
-  2. **Heartbeat (3s 周期)**: jsonl から sessionId / ai-title / mtime / 進行中 user prompt / 進行中 assistant text を抽出し `/v1/sessions/heartbeat` に POST。subprocess の存在自体が "session alive" のシグナル（CC 終了 → このプロセスも終了 → backend が closed と判定）
-  3. **Prompt drain (2s 周期)**: スマホアプリが POST した `prompts.queued` を `/v1/sessions/:cwd/prompts/queued` で取り、`/v1/prompts/:id/delivered` で claim してから `notifications/claude/channel` で CC に inject。claim-then-emit で同 cwd に複数 CC があっても二重配信しない
+  1. **Approval relay**: Channels の `permission_request` を受け取り backend に POST、`/v1/wait` long-poll で verdict を取り `permission` notification を返す。JSONL の tool_result 監視で「PC 早勝ち」 を検知して backend に `/dismiss` (= `pending → expired`)
+  2. **Heartbeat (5〜15s 周期、 inflight/idle 切替)**: jsonl から sessionId / ai-title / mtime / 進行中 user prompt / 進行中 blocks (text + tool_use 順序保持) を抽出し `/v1/wait` body に同梱して upsert。subprocess の存在自体が "session alive" のシグナル（CC 終了 → このプロセスも終了 → backend が closed と判定）
+  3. **Prompt drain**: `/v1/wait` のイベント駆動で queued prompt を受け取り、`/v1/prompts/:id/delivered` で claim してから `notifications/claude/channel` で CC に inject。claim-then-emit で同 cwd に複数 CC があっても二重配信しない
 - 「常に許可」レスポンスを受けたら `<cwd>/.claude/settings.local.json` に tool パターンを atomic に追記
 - jsonl の synthetic user エントリ（compact summary、`<command-name>`、`<bash-input>`、`<system-reminder>` 等）はフィルタ。channel 経由 inject は (a) CC が idle 時 = `type:"user"` (`origin.kind:"channel"`) / (b) busy 時 = `type:"attachment"` (`attachment.type:"queued_command"`, `attachment.origin.kind:"channel"`) の 2 形態で書かれるので両方を扱い、`<channel ...>...</channel>` を剥がして実 prompt として扱う
+- **AskUserQuestion は扱わない**: CC が AskUserQuestion を MCP channel に流さない (2026-05-17 spike で確定) ので、 質問は `hooks/ask-user-question.mjs` (per-call PermissionRequest hook) が長 poll で扱う
 - 起動エイリアス: `claude --dangerously-load-development-channels server:cc-remote`
 
+**PermissionRequest hook (`hooks/ask-user-question.mjs`)**
+- matcher: AskUserQuestion 限定 (`~/.claude/settings.json` の `hooks.PermissionRequest`)
+- AskUserQuestion 発火時に per-call で起動 → backend `/v1/questions` に POST → `/v1/questions/:id/wait` で long-poll → answers を `hookSpecificOutput.decision.updatedInput.answers` で返す → CC が CLI dialog を自動 close + answers を tool_result に採用
+- CLI dialog は hook と並行で開く (spike Phase B で確認)。 「PC 早勝ち」 = PostToolUse hook 経由で session-wide dismiss → row 'expired' → /notify skip → phone 通知出ない
+- timeout (default 110s) を超えたら何も返さず exit → CC は CLI dialog の応答のみで進行
+
 **PC hook script (`hooks/cc-remote-hook.mjs`)**
-- Stop / PostToolUse 専用の薄い forwarder。stdin から hook イベント、`~/.claude/projects/.../<sid>.jsonl` から ai-title・経過時間・最終 assistant text を抽出して backend に POST
+- Stop / PostToolUse 専用の薄い forwarder。stdin から hook イベント、`~/.claude/projects/.../<sid>.jsonl` から ai-title・経過時間・最終 assistant blocks を抽出して backend に POST
+- PostToolUse は session_id の `dismissPendingApprovals + dismissPendingQuestionsBySession` を発動 (= PC 早勝ち時の phone UI クリーンアップ)
 - 表示整形ロジックは backend 側に集約済（this script ≒ jsonl parser のみ）
 - 配置: `~/.claude/hooks/cc-remote-hook.mjs`（symlink でリポジトリを参照）、登録は `~/.claude/settings.json`
 
 **Workers backend (Hono)**
-- 単一 Worker。`/v1/devices/register`, `/v1/approvals*`, `/v1/hook/{stop,posttool}`, `/v1/sessions*`, `/v1/sessions/:sid/turns`, `/v1/sessions/:sid/prompts*`, `/v1/prompts/:id/delivered` (`:sid` は session_id)
-- D1 で承認 / セッション / ターン履歴 / queued prompt を管理、FCM v1 (Web Crypto RS256 JWT) で push 配送、`UNREGISTERED` トークンは自動 prune
-- Stop の閾値判定 (`STOP_THRESHOLD_MS`) も backend で。短いターンは push スキップ
+- 単一 Worker。`/v1/devices/register`, `/v1/approvals*`, **`/v1/questions*`**, `/v1/hook/{stop,posttool}`, `/v1/sessions*`, `/v1/sessions/:sid/turns`, `/v1/sessions/:sid/prompts*`, `/v1/prompts/:id/delivered`, `/v1/wait`, `/v1/settings`
+- D1 で承認 / 質問 / セッション / ターン履歴 / queued prompt / 設定を管理、FCM v1 (Web Crypto RS256 JWT) で push 配送、`UNREGISTERED` トークンは自動 prune
+- Stop の閾値判定 (`stop_threshold_ms`) も backend で。短いターンは push スキップ。`ask_delay_ms` (承認用)、`question_ask_delay_ms` (質問用) は別フィールドで持ち、 phone Settings 画面で個別調整可
 - セッション state (`working / idle / awaiting_approval / closed`) は heartbeat age + jsonl mtime + pending approval 数から導出
-- Stop hook 受信時に `current_prompt` / `current_assistant_text` を NULL 化、対応する queued prompt 行は `delivered_at` の grace 15s 経過 + Android 側の text 一致 dedup で消える
+- Stop hook 受信時に `current_prompt` / `current_blocks` を NULL 化、対応する queued prompt 行は `delivered_at` の grace 15s 経過 + Android 側の text 一致 dedup で消える
 - Workers は stateless、D1 が source of truth
 
 **D1 (SQLite at edge)**
-- `devices`, `approvals`, `notifications`, `sessions`, `turns`, `prompts` テーブル
+- `devices`, `approvals`, `questions`, `notifications`, `sessions`, `turns`, `prompts`, `settings` テーブル
 - Sequential Consistency（"read your own writes"）
 
 **Android アプリ (Kotlin + Compose + Material 3)**
@@ -159,14 +164,16 @@ PostToolUse hook も `/v1/hook/posttool` にだけ POST してその cwd の pen
 
 ## 6. データモデル (D1)
 
-migration は `backend/migrations/` に番号付きで配置（`0001_initial.sql` から `0009_index_approvals_cwd.sql`）。スキーマの正は migration ファイル群、以下は要約:
+migration は `backend/migrations/` に番号付きで配置（`0001_initial.sql` から `0016_question_ask_delay.sql`）。スキーマの正は migration ファイル群、以下は要約:
 
 - **devices** — `id` (UUID), `fcm_token`, `name`, `registered_at`
-- **approvals** — `id`, `session_id`, `cwd`, `project_name`, `tool_name`, `tool_input` (JSON), `status` ∈ `pending/allow/deny/expired`, `add_to_allowlist`, `created_at`, `resolved_at`, `resolved_by`
+- **approvals** — `id`, `session_id`, `cwd`, `project_name`, `tool_name`, `tool_input` (JSON: description/input_preview/supports_always), `status` ∈ `pending/allow/deny/expired`, `add_to_allowlist`, `session_label`, `created_at`, `resolved_at`, `resolved_by`
+- **questions** — `id`, `session_id`, `cwd`, `project_name`, `session_label`, `questions` (JSON: AskQuestion[]), `status` ∈ `pending/resolved/expired`, `answers` (JSON: `{question: label | label[]}`), `resolved_by`, `created_at`, `notified_at`, `resolved_at`。AskUserQuestion 用、`tool_input` blob が承認と全く違うので別テーブル化 (2026-05-17 設計判断)
 - **notifications** — completed push の履歴 (`kind='completed'` 等)
-- **sessions** — `cwd` (PK), `session_id`, `project_name`, `ai_title`, `jsonl_mtime`, `last_heartbeat`, `current_prompt`, `current_assistant_text`。channel.mjs heartbeat で upsert、Stop hook で in-flight 列をクリア
-- **turns** — `id`, `cwd`, `session_id`, `user_prompt`, `assistant_text`, `tool_summary` (JSON), `elapsed_ms`, `ended_at`。Stop hook 時に commit、`(cwd, ended_at DESC)` index、30 日 retention
-- **prompts** — `id`, `cwd`, `text`, `status` ∈ `queued/delivered`, `created_at`, `delivered_at`。スマホ → backend → channel.mjs drain → CC inject の queue
+- **sessions** — `session_id` (PK), `cwd`, `project_name`, `ai_title`, `jsonl_mtime`, `last_heartbeat`, `current_prompt`, `current_blocks` (JSON: ordered text + tool_use blocks)。channel.mjs heartbeat で upsert、Stop hook で in-flight 列をクリア
+- **turns** — `id`, `cwd`, `session_id`, `user_prompt`, `blocks` (JSON: 順序保持 text + tool_use)、`tool_summary` (JSON), `elapsed_ms`, `ended_at`。Stop hook 時に commit、`(session_id, ended_at DESC)` index、30 日 retention
+- **prompts** — `id`, `session_id`, `text`, `status` ∈ `queued/delivered`, `created_at`, `delivered_at`。スマホ → backend → channel.mjs drain → CC inject の queue
+- **settings** — 1 行固定 (id=1)、`ask_delay_ms` (承認用 default 10s)、`question_ask_delay_ms` (質問用 default 30s)、`stop_threshold_ms`、`updated_at`。phone Settings 画面で個別調整可
 
 古い行は cleanup-on-write（INSERT/READ 時に N 日以上前を DELETE）で対処、cron 不要。
 
@@ -192,7 +199,7 @@ migration は `backend/migrations/` に番号付きで配置（`0001_initial.sql
 
 ## 8. Hook 登録例（`~/.claude/settings.json`）
 
-PreToolUse は廃止（Channels permission relay が肩代わり）。Stop と PostToolUse の 2 本だけ。
+承認は Channels permission relay (channel.mjs) が、 質問は PermissionRequest hook (ask-user-question.mjs) が担当。PreToolUse は使わない (= 廃止)。
 
 ```json
 {
@@ -210,6 +217,14 @@ PreToolUse は廃止（Channels permission relay が肩代わり）。Stop と P
         "command": "node ~/.claude/hooks/cc-remote-hook.mjs posttool",
         "timeout": 5
       }]
+    }],
+    "PermissionRequest": [{
+      "matcher": "AskUserQuestion",
+      "hooks": [{
+        "type": "command",
+        "command": "node ~/.claude/hooks/ask-user-question.mjs",
+        "timeout": 120
+      }]
     }]
   }
 }
@@ -226,6 +241,13 @@ PreToolUse は廃止（Channels permission relay が肩代わり）。Stop と P
     }
   }
 }
+```
+
+`~/.claude/hooks/` に repo の hook script を symlink:
+
+```bash
+ln -s <repo>/hooks/cc-remote-hook.mjs ~/.claude/hooks/cc-remote-hook.mjs
+ln -s <repo>/hooks/ask-user-question.mjs ~/.claude/hooks/ask-user-question.mjs
 ```
 
 起動は `claude --dangerously-load-development-channels server:cc-remote`（Pro/Max + v2.1.81+ で利用可）。
@@ -280,10 +302,20 @@ PreToolUse は廃止（Channels permission relay が肩代わり）。Stop と P
 - [x] Android build: release を `isMinifyEnabled = true` + ProGuard rules (kotlinx.serialization / Ktor / Firebase / Compose)
 - [x] `Manifest tools:targetApi` を 35 に整合、`ConfigStore.flow` で `IOException` を catch
 
-### Phase 4+: future work
+### Phase 4: AskUserQuestion remote ✅ 完了 (2026-05-18)
+- [x] Spike 検証で PermissionRequest hook + `updatedInput.answers` 経路の挙動を確定 (CLI dialog と並行、 first responder wins)
+- [x] D1 `questions` テーブル + `/v1/questions/*` 専用 route
+- [x] `hooks/ask-user-question.mjs` (per-call long-poll PermissionRequest hook)
+- [x] Android: `PendingQuestionBlock` を SessionDetailScreen に inline 表示、 `QuestionForm` で radio/checkbox/multiSelect、label tap で選択
+- [x] チャット履歴に AskUserQuestion の Q→answer を Bash 等と同じ流儀で inline 表示 (`assistantBlocksAfterFromJsonl` が `tool_result.content` を `_resultText` として注入)
+- [x] 質問用 `question_ask_delay_ms` を承認用と別フィールドで保持 (default 30s)、phone Settings 画面で個別調整可
+- [x] 詳細: [`sessions/2026-05-17_AskUserQuestion-spike検証と設計.md`](./sessions/2026-05-17_AskUserQuestion-spike検証と設計.md)
+
+### Phase 5+: future work
 - 詳細は [`widget-plan.md`](./widget-plan.md)
-- 複数 CC を同 cwd で並行運用するときの session_id ベース絞り込み（現状 cwd だけだと turns / prompts が混ざる）
 - ホームウィジェット / Wear OS / Fitbit ミラー強化
+- `Block` の sealed hierarchy 化 (現状は単一 data class で `kind` discriminator)
+- 旧 (blocks NULL) turn 行の表示 (現状 assistant 部が空表示)
 
 ## 10. UI / ブランディング方針
 
