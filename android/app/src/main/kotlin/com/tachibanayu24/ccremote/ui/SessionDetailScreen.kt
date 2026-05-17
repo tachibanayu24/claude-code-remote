@@ -13,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -392,12 +393,16 @@ private fun QueuedPromptBlock(prompt: QueuedPrompt) {
     }
 }
 
+/**
+ * 承認 / 質問カード共通の外枠。 awaiting アクセントの色付き丸 + ヘッダー文字
+ * + body スロット。 ドメイン固有 (Allow/Deny ボタン or QuestionForm) は content
+ * lambda に任せる。
+ */
 @Composable
-private fun PendingApprovalBlock(
-    approval: PendingApproval,
-    onDecide: (String, String, Boolean) -> Unit,
+private fun PendingCard(
+    header: String,
+    content: @Composable ColumnScope.() -> Unit,
 ) {
-    val haptic = LocalHapticFeedback.current
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -415,87 +420,98 @@ private fun PendingApprovalBlock(
                 )
                 Spacer(Modifier.size(8.dp))
                 Text(
-                    text = "awaiting · ${approval.tool_name}",
+                    text = header,
                     style = MaterialTheme.typography.labelLarge,
                     color = PendingAccent,
                     fontFamily = FontFamily.Monospace,
                 )
             }
-            val description = approval.description
-                .takeIf { it.isNotBlank() && !(it.startsWith("{") && it.endsWith("}")) }
-            val command = remember(approval.tool_name, approval.input_preview) {
-                ApprovalCommandFormatter.extract(approval.tool_name, approval.input_preview)
-            }
-            if (description != null && description != command) {
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (command.isNotBlank()) {
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    SelectionContainer {
-                        Text(
-                            text = command,
-                            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(10.dp),
-                        )
-                    }
-                }
-            }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            content()
+        }
+    }
+}
+
+@Composable
+private fun PendingApprovalBlock(
+    approval: PendingApproval,
+    onDecide: (String, String, Boolean) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    PendingCard(header = "awaiting · ${approval.tool_name}") {
+        val description = approval.description
+            .takeIf { it.isNotBlank() && !(it.startsWith("{") && it.endsWith("}")) }
+        val command = remember(approval.tool_name, approval.input_preview) {
+            ApprovalCommandFormatter.extract(approval.tool_name, approval.input_preview)
+        }
+        if (description != null && description != command) {
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (command.isNotBlank()) {
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surface,
                 modifier = Modifier.fillMaxWidth(),
             ) {
+                SelectionContainer {
+                    Text(
+                        text = command,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(10.dp),
+                    )
+                }
+            }
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Button(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onDecide(approval.id, "allow", false)
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = "${approval.tool_name} を許可"
+                    },
+            ) { Text("Allow") }
+            if (approval.supports_always) {
                 Button(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onDecide(approval.id, "allow", false)
+                        onDecide(approval.id, "allow", true)
                     },
                     modifier = Modifier
                         .weight(1f)
                         .semantics {
                             role = Role.Button
-                            contentDescription = "${approval.tool_name} を許可"
+                            contentDescription = "${approval.tool_name} を常に許可"
                         },
-                ) { Text("Allow") }
-                if (approval.supports_always) {
-                    Button(
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onDecide(approval.id, "allow", true)
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .semantics {
-                                role = Role.Button
-                                contentDescription = "${approval.tool_name} を常に許可"
-                            },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.tertiary,
-                            contentColor = MaterialTheme.colorScheme.onTertiary,
-                        ),
-                    ) { Text("Always") }
-                }
-                OutlinedButton(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onDecide(approval.id, "deny", false)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .semantics {
-                            role = Role.Button
-                            contentDescription = "${approval.tool_name} を拒否"
-                        },
-                ) { Text("Deny") }
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiary,
+                        contentColor = MaterialTheme.colorScheme.onTertiary,
+                    ),
+                ) { Text("Always") }
             }
+            OutlinedButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onDecide(approval.id, "deny", false)
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = "${approval.tool_name} を拒否"
+                    },
+            ) { Text("Deny") }
         }
     }
 }
@@ -507,43 +523,19 @@ private fun PendingQuestionBlock(
 ) {
     val haptic = LocalHapticFeedback.current
     var isSubmitting by remember(question.id) { mutableStateOf(false) }
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .background(PendingAccent, CircleShape),
-                )
-                Spacer(Modifier.size(8.dp))
-                Text(
-                    text = "asking · ${question.questions.size} question${if (question.questions.size > 1) "s" else ""}",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = PendingAccent,
-                    fontFamily = FontFamily.Monospace,
-                )
-            }
-            QuestionForm(
-                questions = question.questions,
-                isSubmitting = isSubmitting,
-                error = null,
-                onSubmit = { answers ->
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    isSubmitting = true
-                    onAnswer(question.id, answers)
-                    // isSubmitting は次の polling で row が消えれば自然にリセット
-                    // されるが、 万一 row が残ると永遠に disable のままになる
-                    // ので 3 秒経ったら戻す (Detail polling 1.5s × 2 回ぶん)。
-                },
-            )
-        }
+    val count = question.questions.size
+    PendingCard(header = "asking · $count question${if (count > 1) "s" else ""}") {
+        QuestionForm(
+            questions = question.questions,
+            isSubmitting = isSubmitting,
+            error = null,
+            onSubmit = { answers ->
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                isSubmitting = true
+                onAnswer(question.id, answers)
+                // 次の polling (1.5s) で pending row が消えれば自然にリセット。
+            },
+        )
     }
 }
 

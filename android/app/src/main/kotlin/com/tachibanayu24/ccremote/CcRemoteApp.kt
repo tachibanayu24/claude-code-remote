@@ -15,11 +15,11 @@ class CcRemoteApp : Application() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(
-                NotificationFactory.CHANNEL_APPROVAL,
-                "承認待ち",
+                NotificationFactory.CHANNEL_REQUEST,
+                "リクエスト待ち",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Claude Code の権限承認待ちを通知します"
+                description = "Claude Code の承認 / 質問待ちを通知します"
             }
         )
         nm.createNotificationChannel(

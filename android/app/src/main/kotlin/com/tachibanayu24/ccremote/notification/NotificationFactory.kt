@@ -10,7 +10,10 @@ import com.tachibanayu24.ccremote.R
 import java.util.concurrent.atomic.AtomicInteger
 
 object NotificationFactory {
-    const val CHANNEL_APPROVAL = "approval"
+    // ID 文字列も "request" にする (承認 + 質問の両方を扱う channel)。 旧 "approval"
+    // channel は古いユーザー端末側に孤立して残るが、 アプリ再インストール or
+    // 端末「設定 → 通知」 から手動削除で消える。 単一 user システムなので許容。
+    const val CHANNEL_REQUEST = "request"
     const val CHANNEL_INFO = "info"
 
     private const val PENDING_FLAGS =
@@ -40,7 +43,7 @@ object NotificationFactory {
         )
         val tap = openSessionPending(context, payload.sessionId, requestCode = notificationId * 4 + 3)
 
-        val builder = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
+        val builder = NotificationCompat.Builder(context, CHANNEL_REQUEST)
             .setSmallIcon(R.drawable.ic_clawd)
             .setContentTitle(payload.title)
             .setContentText(payload.detail.ifBlank { payload.toolName })
@@ -75,7 +78,7 @@ object NotificationFactory {
         val notificationId = payload.notificationId
 
         val tap = openSessionPending(context, payload.sessionId, requestCode = notificationId)
-        val builder = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
+        val builder = NotificationCompat.Builder(context, CHANNEL_REQUEST)
             .setSmallIcon(R.drawable.ic_clawd)
             .setContentTitle(payload.title)
             .setContentText(payload.notificationBody)
