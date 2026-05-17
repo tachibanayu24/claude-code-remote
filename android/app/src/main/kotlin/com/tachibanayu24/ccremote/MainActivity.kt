@@ -94,6 +94,7 @@ class MainActivity : ComponentActivity() {
                             onBack = vm::closeSession,
                             onSendPrompt = { text -> vm.sendPrompt(screen.sessionId, text) },
                             onDecideApproval = vm::decideApproval,
+                            onAnswerQuestion = vm::answerQuestion,
                         )
                         Screen.Settings -> SettingsScreen(
                             config = current,

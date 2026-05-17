@@ -103,11 +103,16 @@ const pendingApprovals = new Map()
  * 数」を baseline からの delta で追跡し、 増分があったら backend に
  * /dismiss-next で「最古 pending を delta 個 expire」を投げる流儀。
  *
- * baseline = channel 起動時の resolved 数。 これ以降の新規 resolved だけが
- * 「CLI 早勝ち」候補。 phone 早勝ち (= hook が answer を返す) ケースでは
- * backend の status が先に resolved になっているので /dismiss-next は no-op。
+ * baseline は「pending_question_ids が初めて非ゼロになった wait round で
+ * 観測した resolved 数」 として lazy 確定する。 起動時に 0 で固定すると
+ * 過去の jsonl 履歴 (= 既に解決済みの古い AskUserQuestion) を「新規 CLI
+ * 早勝ち」 と誤判定して新規 pending を即 expire してしまうため。
+ *
+ * null = 未初期化。 最初に pending_question_ids が観測された wait round で
+ * その時点の resolved 数を baseline にし、 そこからの delta だけを dismiss
+ * 対象にする。
  */
-let lastSeenAskResolvedCount = 0
+let lastSeenAskResolvedCount = null
 /** wait response 由来の「現在 backend が pending と把握している question id 群」 */
 const pendingQuestionIds = new Set()
 
@@ -265,15 +270,6 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
  */
 async function waitLoop() {
   let backoffMs = 1_000
-  // 起動時の AskUserQuestion resolved 数を baseline にする。 channel が走り
-  // 始める前に既に解決済みの AskUserQuestion は CLI 早勝ち判定に含めない。
-  try {
-    const sess = readPpidSession()
-    if (sess?.sessionId) {
-      const jsonl = readFileSync(jsonlPath(sess.cwd, sess.sessionId), 'utf8')
-      lastSeenAskResolvedCount = countAskUserQuestionStatus(jsonl).resolved
-    }
-  } catch (_) {}
   while (true) {
     if (!isConfigured()) {
       await sleep(WAIT_BACKOFF_MAX_MS)
@@ -302,10 +298,14 @@ async function waitLoop() {
     }
     if (pendingQuestionIds.size > 0 && jsonl) {
       const { resolved } = countAskUserQuestionStatus(jsonl)
-      const delta = resolved - lastSeenAskResolvedCount
-      if (delta > 0) {
-        // backend に oldest-first で N 件 expire を投げる。 phone 早勝ちで
-        // backend が既に resolved に遷移していれば no-op (count=0 が返る)。
+      if (lastSeenAskResolvedCount === null) {
+        // baseline 確定: pending が初めて見えた round の resolved 数を起点
+        // にし、 ここからの増分だけを CLI 早勝ち候補にする。 こうしないと
+        // 起動直後の jsonl 履歴を全部「新規」 扱いして oldest pending を
+        // 一気に expire してしまう (= ask_delay 中に通知が出る前に消える)。
+        lastSeenAskResolvedCount = resolved
+      } else if (resolved > lastSeenAskResolvedCount) {
+        const delta = resolved - lastSeenAskResolvedCount
         const count = Math.min(delta, pendingQuestionIds.size)
         try {
           const r = await apiPost(`/v1/questions/dismiss-next/${snapshot.session_id}?count=${count}`, {})

@@ -68,10 +68,13 @@ object NotificationFactory {
     }
 
     fun showQuestion(context: Context, data: Map<String, String>) {
+        // 承認 relay と同じ流儀: 通知タップは MainActivity に遷移するだけで、
+        // 回答 UI は SessionDetailScreen 内の PendingQuestionBlock (inline)
+        // が一手に引き受ける。 専用 Activity を立てる二重経路は持たない。
         val payload = QuestionPayload.fromFcm(data) ?: return
         val notificationId = payload.notificationId
 
-        val tap = questionPending(context, data, requestCode = notificationId)
+        val tap = openSessionPending(context, payload.sessionId, requestCode = notificationId)
         val builder = NotificationCompat.Builder(context, CHANNEL_APPROVAL)
             .setSmallIcon(R.drawable.ic_clawd)
             .setContentTitle(payload.title)
@@ -142,23 +145,6 @@ object NotificationFactory {
      * the session detail screen for `sessionId`. If sessionId is missing
      * (older payload or test push), fall back to the launcher behaviour.
      */
-    /**
-     * 質問通知のタップ intent。 `QuestionActivity` を起動して、 FCM data の
-     * 必要フィールドを Intent extra で渡す (Activity が自分で payload を
-     * 再構築する)。 通知 ID も渡して回答後に消せるように。
-     */
-    private fun questionPending(context: Context, data: Map<String, String>, requestCode: Int): PendingIntent {
-        val intent = Intent(context, com.tachibanayu24.ccremote.ui.QuestionActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            putExtra("request_id", data["request_id"].orEmpty())
-            putExtra("session_id", data["session_id"].orEmpty())
-            putExtra("project", data["project"].orEmpty())
-            putExtra("session_label", data["session_label"].orEmpty())
-            putExtra("questions", data["questions"].orEmpty())
-        }
-        return PendingIntent.getActivity(context, requestCode, intent, PENDING_FLAGS)
-    }
-
     private fun openSessionPending(context: Context, sessionId: String, requestCode: Int): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP

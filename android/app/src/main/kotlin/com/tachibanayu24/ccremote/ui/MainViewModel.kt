@@ -231,6 +231,23 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * AskUserQuestion へのインライン回答 (SessionDetailScreen の
+     * PendingQuestionBlock 経由)。 decideApproval と完全に対称: backend に
+     * POST した直後に detail を refresh して resolved 行が pending リストから
+     * 消える挙動を期待する。
+     */
+    fun answerQuestion(questionId: String, answers: kotlinx.serialization.json.JsonObject) {
+        viewModelScope.launch {
+            val client = BackendClientHolder.current() ?: return@launch
+            client.respondQuestion(questionId, answers)
+            val sessionId = (_uiState.value.screen as? Screen.Detail)?.sessionId ?: return@launch
+            client.sessionDetail(sessionId)?.let { detail ->
+                _uiState.update { it.copy(selectedDetail = detail) }
+            }
+        }
+    }
+
     // ---------- Setup / Settings ----------
 
     fun saveConfig(url: String, secret: String) {

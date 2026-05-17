@@ -110,11 +110,19 @@ data class SessionDetailHeader(
 )
 
 @Serializable
+data class PendingQuestion(
+    val id: String,
+    val questions: List<AskQuestion>,
+    val created_at: Long,
+)
+
+@Serializable
 data class SessionDetailResponse(
     val session: SessionDetailHeader,
     val turns: List<Turn>,
     val pending_approvals: List<PendingApproval> = emptyList(),
     val queued_prompts: List<QueuedPrompt> = emptyList(),
+    val pending_questions: List<PendingQuestion> = emptyList(),
 )
 
 /**

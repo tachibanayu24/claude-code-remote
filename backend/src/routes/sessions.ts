@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { parseToolInputBlob } from '../approvals'
 import { cleanupOldTurns, cleanupStaleSessions, nowSec } from '../db'
+import { parseQuestionsBlob } from '../questions'
 import type { Bindings, SessionRow, TurnRow } from '../types'
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -128,10 +129,18 @@ app.get('/:sid/turns', async (c) => {
          OR (status = 'delivered' AND delivered_at >= ?)
        ) ORDER BY created_at ASC`
     ).bind(sid, nowSec() - RECENT_DELIVERED_TTL_SEC),
+    // AskUserQuestion pending rows for this session — surfaced into the
+    // chat-style detail screen so the user can answer in-place, mirroring
+    // pending_approvals. resolved/expired rows are filtered out.
+    c.env.DB.prepare(
+      `SELECT id, questions, created_at
+       FROM questions WHERE session_id = ? AND status = 'pending' ORDER BY created_at ASC`
+    ).bind(sid),
   ])
   const turnsRes = detailBatch[0]!
   const pendingRes = detailBatch[1]!
   const queuedRes = detailBatch[2]!
+  const questionsRes = detailBatch[3]!
 
   const turns = ((turnsRes.results ?? []) as TurnRow[]).map((r) => ({
     id: r.id,
@@ -164,6 +173,14 @@ app.get('/:sid/turns', async (c) => {
     id: string; text: string; created_at: number
   }>
 
+  const pendingQuestions = ((questionsRes.results ?? []) as Array<{
+    id: string; questions: string; created_at: number
+  }>).map((r) => ({
+    id: r.id,
+    questions: parseQuestionsBlob(r.questions).questions,
+    created_at: r.created_at,
+  }))
+
   return c.json({
     session: {
       session_id: session.session_id,
@@ -180,6 +197,7 @@ app.get('/:sid/turns', async (c) => {
     turns,
     pending_approvals: pendingApprovals,
     queued_prompts: queuedPrompts,
+    pending_questions: pendingQuestions,
   })
 })
 

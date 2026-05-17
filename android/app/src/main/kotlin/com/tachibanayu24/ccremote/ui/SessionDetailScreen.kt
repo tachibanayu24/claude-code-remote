@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import com.tachibanayu24.ccremote.data.ApprovalCommandFormatter
 import com.tachibanayu24.ccremote.data.Block
 import com.tachibanayu24.ccremote.data.PendingApproval
+import com.tachibanayu24.ccremote.data.PendingQuestion
 import com.tachibanayu24.ccremote.data.QueuedPrompt
 import com.tachibanayu24.ccremote.data.SessionDetailResponse
 import com.tachibanayu24.ccremote.data.ToolCall
@@ -91,6 +92,7 @@ fun SessionDetailScreen(
     onBack: () -> Unit,
     onSendPrompt: (String) -> Unit,
     onDecideApproval: (approvalId: String, decision: String, addToAllowlist: Boolean) -> Unit,
+    onAnswerQuestion: (questionId: String, answers: JsonObject) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -115,6 +117,7 @@ fun SessionDetailScreen(
         // chronological order: oldest at top, latest at bottom.
         val turns = remember(detail) { detail?.turns?.asReversed().orEmpty() }
         val pendingApprovals = detail?.pending_approvals.orEmpty()
+        val pendingQuestions = detail?.pending_questions.orEmpty()
         val currentPrompt = detail?.session?.current_prompt?.takeIf { it.isNotBlank() }
         val currentBlocks = detail?.session?.current_blocks.orEmpty()
         val hasInFlight = currentPrompt != null
@@ -142,7 +145,8 @@ fun SessionDetailScreen(
         val itemCount = turns.size +
             (if (hasInFlight) 1 else 0) +
             queuedPrompts.size +
-            pendingApprovals.size
+            pendingApprovals.size +
+            pendingQuestions.size
         // Track total characters across all blocks so in-flight streaming
         // (text appended one chunk at a time) triggers the auto-scroll.
         val liveLen = currentBlocks.sumOf {
@@ -176,7 +180,7 @@ fun SessionDetailScreen(
                 ) {
                     CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
                 }
-                turns.isEmpty() && !hasInFlight && queuedPrompts.isEmpty() && pendingApprovals.isEmpty() -> EmptyState()
+                turns.isEmpty() && !hasInFlight && queuedPrompts.isEmpty() && pendingApprovals.isEmpty() && pendingQuestions.isEmpty() -> EmptyState()
                 else -> LazyColumn(
                     // Chat content is slightly translucent so the animated
                     // Clawd backdrop bleeds through where text or whitespace
@@ -198,6 +202,9 @@ fun SessionDetailScreen(
                     items(queuedPrompts, key = { "queued-${it.id}" }) { p -> QueuedPromptBlock(p) }
                     items(pendingApprovals, key = { "approval-${it.id}" }) { approval ->
                         PendingApprovalBlock(approval = approval, onDecide = onDecideApproval)
+                    }
+                    items(pendingQuestions, key = { "question-${it.id}" }) { question ->
+                        PendingQuestionBlock(question = question, onAnswer = onAnswerQuestion)
                     }
                 }
             }
@@ -489,6 +496,53 @@ private fun PendingApprovalBlock(
                         },
                 ) { Text("Deny") }
             }
+        }
+    }
+}
+
+@Composable
+private fun PendingQuestionBlock(
+    question: PendingQuestion,
+    onAnswer: (questionId: String, answers: JsonObject) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    var isSubmitting by remember(question.id) { mutableStateOf(false) }
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(PendingAccent, CircleShape),
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    text = "asking · ${question.questions.size} question${if (question.questions.size > 1) "s" else ""}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = PendingAccent,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            QuestionForm(
+                questions = question.questions,
+                isSubmitting = isSubmitting,
+                error = null,
+                onSubmit = { answers ->
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    isSubmitting = true
+                    onAnswer(question.id, answers)
+                    // isSubmitting は次の polling で row が消えれば自然にリセット
+                    // されるが、 万一 row が残ると永遠に disable のままになる
+                    // ので 3 秒経ったら戻す (Detail polling 1.5s × 2 回ぶん)。
+                },
+            )
         }
     }
 }

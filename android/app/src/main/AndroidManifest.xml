@@ -36,12 +36,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".ui.QuestionActivity"
-            android:exported="false"
-            android:launchMode="singleTask"
-            android:theme="@style/Theme.CcRemote"/>
-
         <service
             android:name=".notification.CcRemoteMessagingService"
             android:exported="false">
