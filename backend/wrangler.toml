@@ -21,3 +21,10 @@ migrations_dir = "migrations"
 # `settings` table (migration 0012). The phone's Settings screen tunes them
 # at runtime — no env var needed. STOP_THRESHOLD_MS is still read by
 # readSettings() as a legacy fallback if the table is missing.
+
+# Workers Observability — invocation logs (CPU time / duration / status / URL を
+# 自動保存し、Dashboard の Logs / Query Builder で後から検索可能)。
+# Free tier: 200k events/日・3 日保持 (現状 24h ≒ 10k req なので余裕)。
+[observability]
+enabled = true
+head_sampling_rate = 1
