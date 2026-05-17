@@ -77,6 +77,21 @@ FCM (Firebase Cloud Messaging) は別ベンダーだが本プロジェクトで�
 
 最新が一番上。スキル `check-cf-limits` が自動で追記する。
 
+### 2026-05-17 22:06 JST — 要監視 (D1 writes が前回比 2.4 倍に上昇、Workers は引き続き余裕)
+
+- Workers 24h: **18,843 / 100,000 req (18.8%)** / CPU P99 **7,399 μs** / errors 0
+- D1 24h: rows R/W = **27,726 / 52,334** (writes **52.3%** of 100k → WATCH 圏)
+- DB size: 5.04 MB (5GB 中 0.1%、前回 1.81 MB から約 2.8 倍)
+- 過去 7 日のピーク: 2026-05-16 requests=17,635 (17.6%) / D1 writes=47,240 rows (47.2%)
+- 所見: D1 writes が 5/13 の 21.4% → 5/17 24h 集計で 52.3% に上昇。直近の変更
+  `3532e57 (ask_delay 中の dismiss 通知)` で `/v1/approvals/:id/dismiss` の書き込みが
+  増えた可能性が高い (channel.mjs から expired 通知のたびに UPDATE が走る)。
+  5/16 ピークの 47k rows/日が継続すると 100k 枠の半分を常用することになるので、
+  dismiss の書き込みパスが本当に必要かレビュー推奨。
+- CPU P99 は今日 7,399 μs で前回 (9,998 μs) より改善。ただし 5/11 (14,574 μs)、
+  5/13 (10,565 μs)、5/16 (10,509 μs) と 10ms 上限超の日が断続的に出続けているので
+  Workers Observability の outlier 監視は継続。
+
 ### 2026-05-13 01:45 JST — 余裕あり (前回スナップショットからほぼ無変動)
 
 - Workers 24h: **9,837 / 100,000 req (9.8%)** / CPU P99 **9,963 μs** / errors 0
