@@ -138,7 +138,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * milliseconds. Negative or absurdly large values are caught by the
      * backend's range check — we still show the resulting error to the user.
      */
-    fun saveNotificationSettings(askDelaySec: Long, stopThresholdSec: Long) {
+    fun saveNotificationSettings(
+        askDelaySec: Long,
+        stopThresholdSec: Long,
+        questionAskDelaySec: Long,
+    ) {
         if (_uiState.value.isSavingSettings) return
         viewModelScope.launch {
             val client = BackendClientHolder.current() ?: return@launch
@@ -147,6 +151,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val updated = client.updateSettings(
                     askDelayMs = askDelaySec * 1000,
                     stopThresholdMs = stopThresholdSec * 1000,
+                    questionAskDelayMs = questionAskDelaySec * 1000,
                 )
                 if (updated == null) {
                     _uiState.update { it.copy(settingsError = "保存に失敗") }

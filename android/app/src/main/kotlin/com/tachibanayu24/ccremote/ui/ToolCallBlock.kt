@@ -37,6 +37,8 @@ import com.tachibanayu24.ccremote.data.str
 import com.tachibanayu24.ccremote.data.url
 import com.tachibanayu24.ccremote.data.writeContent
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import com.tachibanayu24.ccremote.ui.code.CodeBlock
 import com.tachibanayu24.ccremote.ui.code.extensionOf
@@ -75,6 +77,7 @@ fun ToolCallBlock(call: ToolCall, key: String) {
         "WebFetch" -> SimpleRow("WebFetch", call.url?.let(::hostOnly) ?: "?")
         "WebSearch" -> SimpleRow("WebSearch", call.input.str("query") ?: "?")
         "Agent" -> SimpleRow("Agent", agentTarget(call))
+        "AskUserQuestion" -> AskUserQuestionBlock(call, key)
         "ScheduleWakeup" -> SimpleRow("ScheduleWakeup", scheduleWakeupTarget(call))
         "TaskCreate" -> SimpleRow("TaskCreate", call.input.str("subject") ?: "?")
         "TaskUpdate" -> SimpleRow("TaskUpdate", taskUpdateTarget(call))
@@ -309,3 +312,71 @@ private fun languageFor(path: String): SyntaxLanguage? =
 
 private fun hostOnly(url: String): String =
     runCatching { URI(url).host ?: url }.getOrDefault(url)
+
+/**
+ * AskUserQuestion 用の inline 表示。 input.questions[] と、 hook script が
+ * jsonl 走査で注入する `_resultText` (= tool_result.content の "User has
+ * answered your questions:..." 文字列) をパースして「質問 → 回答」 を 1 行ずつ
+ * 並べる。 Bash の command と同じテンポ感で、 横スクロールせずチャットに馴染む
+ * サイズで出す。
+ */
+@Composable
+@Suppress("UNUSED_PARAMETER")
+private fun AskUserQuestionBlock(call: ToolCall, key: String) {
+    val questions = call.input["questions"]
+        ?.let { runCatching { it.jsonArray }.getOrNull() }
+        .orEmpty()
+    if (questions.isEmpty()) return SimpleRow("AskUserQuestion", "")
+    val resultText = call.input.str("_resultText")
+    val answers = remember(resultText) { parseAnswers(resultText) }
+
+    Column {
+        ToolHeader(name = "AskUserQuestion", target = "")
+        Column(
+            modifier = Modifier.padding(start = 12.dp, top = 2.dp),
+        ) {
+            questions.forEach { qEl ->
+                val q = runCatching { qEl.jsonObject }.getOrNull() ?: return@forEach
+                val question = q.str("question") ?: return@forEach
+                val ans = answers[question]
+                Text(
+                    text = "Q. $question",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                if (ans != null) {
+                    Text(
+                        text = "→ $ans",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 8.dp, bottom = 2.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * CC が tool_result に詰める "User has answered your questions:" 形式を雑に
+ * パース。 形式は `"Q1"="A", "Q2"="A,B", ...`。 完全な ANTLR 的パーサーは要らず、
+ * `"key"="value"` の組をエスケープなし前提で取り出す。
+ */
+private fun parseAnswers(resultText: String?): Map<String, String> {
+    if (resultText.isNullOrBlank()) return emptyMap()
+    val prefix = "User has answered your questions:"
+    val body = resultText.substringAfter(prefix, "").trim()
+    if (body.isEmpty()) return emptyMap()
+    val map = linkedMapOf<String, String>()
+    // " で囲まれた key と value のペアを順に拾う。 value 内に , が入りうる
+    // (multiSelect の comma-joined) ので、 quote の対応に頼る。
+    val regex = Regex("\"((?:[^\"\\\\]|\\\\.)*)\"=\"((?:[^\"\\\\]|\\\\.)*)\"")
+    for (m in regex.findAll(body)) {
+        val k = m.groupValues[1].replace("\\\"", "\"")
+        val v = m.groupValues[2].replace("\\\"", "\"")
+        map[k] = v
+    }
+    return map
+}

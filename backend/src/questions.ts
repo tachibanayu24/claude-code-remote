@@ -83,46 +83,15 @@ export async function dismissPendingQuestionsBySession(
   return (await expirePendingQuestions(db, env, 'session_id', sessionId)).length
 }
 
-/** channel.mjs path: JSONL shows CC has answered this specific question locally. */
+/**
+ * Idempotent expire by id. 残してあるのは将来 channel.mjs が tool_use_id 個別
+ * binding で個別 dismiss する余地のため (現状 AskUserQuestion の dismiss は
+ * PostToolUse hook の session-wide path に一任しているので呼ばれない)。
+ */
 export async function dismissQuestionById(
   db: D1Database,
   env: Bindings,
   id: string,
 ): Promise<boolean> {
   return (await expirePendingQuestions(db, env, 'id', id)).length > 0
-}
-
-/**
- * channel.mjs が JSONL 上で AskUserQuestion の tool_result 増加を検出した時、
- * 「session の最古 pending を N 個 expire してくれ」を投げてくる。 backend が
- * atomic に oldest first で確定する (= 同時に複数 hook が走ってる場合の race
- * fix)。 expire 数 (実際に消えた数) を返す。
- */
-export async function dismissOldestPendingQuestions(
-  db: D1Database,
-  env: Bindings,
-  sessionId: string,
-  count: number,
-): Promise<number> {
-  if (!sessionId || count <= 0) return 0
-  // 最も古い pending N 件を 1 SQL で取得し、 status を expired にする。
-  const oldestRes = await db.prepare(
-    `SELECT id FROM questions WHERE session_id = ? AND status = 'pending'
-     ORDER BY created_at ASC LIMIT ?`
-  ).bind(sessionId, count).all<{ id: string }>()
-  const ids = (oldestRes.results ?? []).map((r) => r.id)
-  if (ids.length === 0) return 0
-  const placeholders = ids.map(() => '?').join(',')
-  await db.prepare(
-    `UPDATE questions SET status = 'expired', resolved_at = ?
-     WHERE status = 'pending' AND id IN (${placeholders})`
-  ).bind(nowSec(), ...ids).run()
-  await Promise.all(ids.map((id) =>
-    notifyQuestionResolved(env, db, {
-      request_id: id,
-      decision: 'expired',
-      resolved_by: 'cli',
-    })
-  ))
-  return ids.length
 }

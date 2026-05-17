@@ -22,26 +22,32 @@ app.put('/', async (c) => {
   const current = await readSettings(c.env)
   const askDelay = body.ask_delay_ms ?? current.ask_delay_ms
   const stopThreshold = body.stop_threshold_ms ?? current.stop_threshold_ms
+  const questionAskDelay = body.question_ask_delay_ms ?? current.question_ask_delay_ms
 
   if (
     !Number.isInteger(askDelay) || askDelay < 0 || askDelay > MAX_ASK_DELAY_MS ||
-    !Number.isInteger(stopThreshold) || stopThreshold < 0 || stopThreshold > MAX_STOP_THRESHOLD_MS
+    !Number.isInteger(stopThreshold) || stopThreshold < 0 || stopThreshold > MAX_STOP_THRESHOLD_MS ||
+    !Number.isInteger(questionAskDelay) || questionAskDelay < 0 || questionAskDelay > MAX_ASK_DELAY_MS
   ) {
     return c.json({ error: 'out of range' }, 400)
   }
 
-  // INSERT OR REPLACE keeps the single-row invariant whether the seed migration
-  // has run or not.
   await c.env.DB.prepare(
-    `INSERT INTO settings (id, ask_delay_ms, stop_threshold_ms, updated_at)
-     VALUES (1, ?, ?, ?)
+    `INSERT INTO settings (id, ask_delay_ms, stop_threshold_ms, question_ask_delay_ms, updated_at)
+     VALUES (1, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        ask_delay_ms = excluded.ask_delay_ms,
        stop_threshold_ms = excluded.stop_threshold_ms,
+       question_ask_delay_ms = excluded.question_ask_delay_ms,
        updated_at = excluded.updated_at`
-  ).bind(askDelay, stopThreshold, nowSec()).run()
+  ).bind(askDelay, stopThreshold, questionAskDelay, nowSec()).run()
 
-  return c.json({ ask_delay_ms: askDelay, stop_threshold_ms: stopThreshold, updated_at: nowSec() })
+  return c.json({
+    ask_delay_ms: askDelay,
+    stop_threshold_ms: stopThreshold,
+    question_ask_delay_ms: questionAskDelay,
+    updated_at: nowSec(),
+  })
 })
 
 export default app

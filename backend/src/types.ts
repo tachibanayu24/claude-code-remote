@@ -100,10 +100,6 @@ export interface WaitRequest {
   current_prompt?: string | null
   current_blocks?: Block[] | null
   pending_request_ids?: string[]
-  // AskUserQuestion 用に hook が POST した row のうち、channel.mjs が JSONL
-  // 監視中の question ids。 backend は response に「現在 session の pending
-  // questions」を返すので、 channel.mjs はこれを使って早期 dismiss を判断する。
-  pending_question_ids?: string[]
 }
 
 export type WaitEvent =
@@ -145,10 +141,12 @@ export type QuestionWaitEvent =
 export interface SettingsRow {
   ask_delay_ms: number
   stop_threshold_ms: number
+  question_ask_delay_ms: number
   updated_at: number
 }
 
 export interface SettingsUpdateRequest {
   ask_delay_ms?: number
   stop_threshold_ms?: number
+  question_ask_delay_ms?: number
 }

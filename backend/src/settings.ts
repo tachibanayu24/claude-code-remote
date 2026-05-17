@@ -1,6 +1,12 @@
 import type { Bindings, SettingsRow } from './types'
 
-const DEFAULTS = { ask_delay_ms: 10_000, stop_threshold_ms: 180_000 } as const
+const DEFAULTS = {
+  ask_delay_ms: 10_000,
+  stop_threshold_ms: 180_000,
+  // 質問は CLI 即応答が少なく、 user がじっくり選択肢を読んでから答える
+  // パターンが多いので、 承認用より長めの遅延を default にする。
+  question_ask_delay_ms: 30_000,
+} as const
 
 /**
  * Read the single-row settings table. Falls back to defaults when the row is
@@ -10,7 +16,7 @@ const DEFAULTS = { ask_delay_ms: 10_000, stop_threshold_ms: 180_000 } as const
 export async function readSettings(env: Bindings): Promise<SettingsRow> {
   try {
     const row = await env.DB
-      .prepare('SELECT ask_delay_ms, stop_threshold_ms, updated_at FROM settings WHERE id = 1')
+      .prepare('SELECT ask_delay_ms, stop_threshold_ms, question_ask_delay_ms, updated_at FROM settings WHERE id = 1')
       .first<SettingsRow>()
     if (row) return row
   } catch (_) {
@@ -22,6 +28,7 @@ export async function readSettings(env: Bindings): Promise<SettingsRow> {
   return {
     ask_delay_ms: DEFAULTS.ask_delay_ms,
     stop_threshold_ms: Number.isFinite(envThreshold) ? envThreshold : DEFAULTS.stop_threshold_ms,
+    question_ask_delay_ms: DEFAULTS.question_ask_delay_ms,
     updated_at: 0,
   }
 }

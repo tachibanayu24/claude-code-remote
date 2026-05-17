@@ -107,9 +107,13 @@ class BackendClient(private val config: Config) {
         if (!res.status.isSuccess()) null else res.body<NotificationSettings>()
     }.getOrNull()
 
-    suspend fun updateSettings(askDelayMs: Long?, stopThresholdMs: Long?): NotificationSettings? = runCatching {
+    suspend fun updateSettings(
+        askDelayMs: Long?,
+        stopThresholdMs: Long?,
+        questionAskDelayMs: Long?,
+    ): NotificationSettings? = runCatching {
         val res: HttpResponse = http.put("${config.backendUrl}/v1/settings") {
-            setBody(NotificationSettingsUpdate(askDelayMs, stopThresholdMs))
+            setBody(NotificationSettingsUpdate(askDelayMs, stopThresholdMs, questionAskDelayMs))
         }
         if (!res.status.isSuccess()) null else res.body<NotificationSettings>()
     }.getOrNull()

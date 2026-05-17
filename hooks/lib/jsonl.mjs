@@ -326,54 +326,6 @@ export function hasToolResultFor(jsonl, toolUseId) {
   return false
 }
 
-/**
- * Count assistant `tool_use` blocks for AskUserQuestion and how many of them
- * already have a paired `tool_result`. channel.mjs uses this to detect when
- * CC has answered a question locally (CLI early-resolve) without needing to
- * bind to a specific tool_use_id — a delta in `resolved` between wait rounds
- * means "one more pending question can be dismissed from the phone".
- */
-export function countAskUserQuestionStatus(jsonl) {
-  if (!jsonl) return { resolved: 0, pending: 0, total: 0 }
-  const lines = jsonl.split('\n')
-  const resulted = new Set()
-  const toolUseIds = []
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (line.includes('"type":"tool_result"')) {
-      try {
-        const e = JSON.parse(line)
-        if (e.type === 'user') {
-          const c = e.message?.content
-          if (Array.isArray(c)) {
-            for (const b of c) {
-              if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string') {
-                resulted.add(b.tool_use_id)
-              }
-            }
-          }
-        }
-      } catch (_) {}
-    }
-    if (line.includes('"type":"tool_use"')) {
-      try {
-        const e = JSON.parse(line)
-        if (e.type !== 'assistant') continue
-        const c = e.message?.content
-        if (!Array.isArray(c)) continue
-        for (const b of c) {
-          if (b?.type === 'tool_use' && typeof b.id === 'string' && b.name === 'AskUserQuestion') {
-            toolUseIds.push(b.id)
-          }
-        }
-      } catch (_) {}
-    }
-  }
-  let resolved = 0
-  for (const id of toolUseIds) if (resulted.has(id)) resolved++
-  return { resolved, pending: toolUseIds.length - resolved, total: toolUseIds.length }
-}
-
 function deepEqualJson(a, b) {
   if (a === b) return true
   if (typeof a !== typeof b) return false
@@ -401,6 +353,10 @@ function deepEqualJson(a, b) {
 export function assistantBlocksAfterFromJsonl(jsonl, fromLineIndex = -1) {
   if (!jsonl) return []
   const lines = jsonl.split('\n')
+  // AskUserQuestion の tool_result.content は別 line に書かれる (user role)
+  // ので、 input には乗っていない answer 文字列を tool_use と紐付けるために
+  // 先に一括スキャンしておく。 Bash/Edit は input だけで完結するので不要。
+  const aqResultText = collectAskUserQuestionResults(lines)
   const blocks = []
   for (let i = Math.max(0, fromLineIndex + 1); i < lines.length; i++) {
     const line = lines[i]
@@ -416,10 +372,48 @@ export function assistantBlocksAfterFromJsonl(jsonl, fromLineIndex = -1) {
           const text = b.text.trim()
           if (text) blocks.push({ kind: 'text', text })
         } else if (b.type === 'tool_use' && typeof b.name === 'string') {
-          blocks.push({ kind: 'tool_use', name: b.name, input: b.input ?? {} })
+          const input = { ...(b.input ?? {}) }
+          // AskUserQuestion は answer 文字列を tool_use 自身に持たないので
+          // 対応する tool_result.content を `_resultText` として inline 注入。
+          // アンスコ prefix で CC 由来の input フィールドと衝突しないように。
+          if (b.name === 'AskUserQuestion' && typeof b.id === 'string') {
+            const text = aqResultText.get(b.id)
+            if (text) input._resultText = text
+          }
+          blocks.push({ kind: 'tool_use', name: b.name, input })
         }
       }
     } catch (_) {}
   }
   return blocks
+}
+
+/**
+ * AskUserQuestion の各 tool_use_id に対応する tool_result.content (文字列) を
+ * 一括収集する。 user role の tool_result line は assistant block 走査時に
+ * 別の line に居るので、 事前に index を作っておく流儀。
+ */
+function collectAskUserQuestionResults(lines) {
+  const map = new Map()
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.includes('"type":"tool_result"')) continue
+    try {
+      const e = JSON.parse(line)
+      if (e.type !== 'user') continue
+      const c = e.message?.content
+      if (!Array.isArray(c)) continue
+      for (const b of c) {
+        if (b?.type !== 'tool_result') continue
+        if (typeof b.tool_use_id !== 'string') continue
+        if (typeof b.content !== 'string') continue
+        // 全 tool_result を保存すると無駄なので AskUserQuestion 由来の
+        // 「User has answered your questions:」 prefix だけ拾う。 これで他の
+        // tool (Bash の長い stdout 等) で blocks payload が膨らむことを回避。
+        if (!b.content.startsWith('User has answered your questions:')) continue
+        map.set(b.tool_use_id, b.content)
+      }
+    } catch (_) {}
+  }
+  return map
 }

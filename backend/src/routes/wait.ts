@@ -95,8 +95,7 @@ app.post('/', async (c) => {
           add_to_allowlist: Number(v.add_to_allowlist) === 1,
         })
       }
-      const pendingQuestionIds = await loadPendingQuestionIds(c.env.DB, sid)
-      return c.json({ events, pending_question_ids: pendingQuestionIds })
+      return c.json({ events })
     }
 
     // Clamp sleep so the total hold respects max_ms — without this the last
@@ -105,21 +104,7 @@ app.post('/', async (c) => {
     if (remaining <= 0) break
     await new Promise((r) => setTimeout(r, Math.min(D1_POLL_MS, remaining)))
   }
-  const pendingQuestionIds = await loadPendingQuestionIds(c.env.DB, sid)
-  return c.json({ events: [], pending_question_ids: pendingQuestionIds })
+  return c.json({ events: [] })
 })
-
-/**
- * Session の pending question ids を 1 query で取得。 channel.mjs は wait
- * response でこれを受け取り、 JSONL 監視で AskUserQuestion の tool_result を
- * 検出したら /v1/questions/:id/dismiss を叩く。 idle/inflight どちらの
- * wait round でも返すので channel.mjs 側は新規 POST に自然に気付く。
- */
-async function loadPendingQuestionIds(db: D1Database, sessionId: string): Promise<string[]> {
-  const r = await db.prepare(
-    `SELECT id FROM questions WHERE session_id = ? AND status = 'pending'`
-  ).bind(sessionId).all<{ id: string }>()
-  return (r.results ?? []).map((row) => row.id)
-}
 
 export default app

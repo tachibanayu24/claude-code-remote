@@ -10,7 +10,6 @@ import { Hono } from 'hono'
 import { nowSec, readJson } from '../db'
 import { notifyQuestionRequest, notifyQuestionResolved } from '../push'
 import {
-  dismissOldestPendingQuestions,
   dismissQuestionById,
   encodeQuestionsBlob,
   parseQuestionsBlob,
@@ -60,15 +59,17 @@ app.post('/', async (c) => {
     )
     .run()
 
-  // ask_delay と FCM push の流儀は承認と完全同じ。delay > 0 ならここでは
-  // push せず、 hook 側が /notify を遅延起動する。
+  // 質問は承認とは別の delay 値 (question_ask_delay_ms) を使う。 承認は CLI
+  // 即応答が前提で短め (default 10s)、 質問は CLI でじっくり選択肢を読む
+  // 前提で長め (default 30s)。 「うるさい通知」 を防ぐ仕組み自体は同じで、
+  // hook 側がこの notify_after_ms 経過後に /notify を遅延起動する。
   const settings = await readSettings(c.env)
-  if (settings.ask_delay_ms > 0) {
+  if (settings.question_ask_delay_ms > 0) {
     return c.json({
       id,
       status: 'pending',
       notified: 0,
-      notify_after_ms: settings.ask_delay_ms,
+      notify_after_ms: settings.question_ask_delay_ms,
     })
   }
   const notified = await notifyQuestionRequest(c.env, c.env.DB, questionPushData({
@@ -110,18 +111,6 @@ app.post('/:id/notify', async (c) => {
   await c.env.DB.prepare('UPDATE questions SET notified_at = ? WHERE id = ?')
     .bind(nowSec(), id).run()
   return c.json({ ok: true, notified })
-})
-
-app.post('/dismiss-next/:sid', async (c) => {
-  // channel.mjs path: AskUserQuestion の tool_result が JSONL に出た回数だけ
-  // 「最古 pending を 1 つ expire」を atomic に呼ぶ用。 channel.mjs が
-  // tool_use_id binding を持たない (PermissionRequest hook の input には
-  // tool_use_id が無い ので) ので、 oldest-first で fairness を担保する。
-  const sid = c.req.param('sid')
-  const countRaw = Number(c.req.query('count'))
-  const count = Number.isFinite(countRaw) && countRaw > 0 ? Math.min(countRaw, 16) : 1
-  const dismissed = await dismissOldestPendingQuestions(c.env.DB, c.env, sid, count)
-  return c.json({ ok: true, dismissed })
 })
 
 app.post('/:id/dismiss', async (c) => {

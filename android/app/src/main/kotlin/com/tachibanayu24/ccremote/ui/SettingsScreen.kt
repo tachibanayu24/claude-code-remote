@@ -55,7 +55,7 @@ fun SettingsScreen(
     isSavingSettings: Boolean,
     settingsError: String?,
     onBack: () -> Unit,
-    onSaveNotificationSettings: (askDelaySec: Long, stopThresholdSec: Long) -> Unit,
+    onSaveNotificationSettings: (askDelaySec: Long, stopThresholdSec: Long, questionAskDelaySec: Long) -> Unit,
     onResetConfig: () -> Unit,
     onTestNotification: () -> Unit,
 ) {
@@ -128,17 +128,16 @@ private fun NotificationTimingSection(
     settings: NotificationSettings?,
     isSaving: Boolean,
     error: String?,
-    onSave: (askDelaySec: Long, stopThresholdSec: Long) -> Unit,
+    onSave: (askDelaySec: Long, stopThresholdSec: Long, questionAskDelaySec: Long) -> Unit,
 ) {
-    // Track the editing state in seconds (UI unit). When the backend value
-    // arrives or changes, sync the inputs — otherwise `remember` would freeze
-    // them at the initial null/0 even after fetch completes.
     var askDelay by remember { mutableStateOf("") }
     var stopThreshold by remember { mutableStateOf("") }
-    LaunchedEffect(settings?.ask_delay_ms, settings?.stop_threshold_ms) {
+    var questionAskDelay by remember { mutableStateOf("") }
+    LaunchedEffect(settings?.ask_delay_ms, settings?.stop_threshold_ms, settings?.question_ask_delay_ms) {
         if (settings != null) {
             askDelay = (settings.ask_delay_ms / 1000).toString()
             stopThreshold = (settings.stop_threshold_ms / 1000).toString()
+            questionAskDelay = (settings.question_ask_delay_ms / 1000).toString()
         }
     }
 
@@ -158,10 +157,17 @@ private fun NotificationTimingSection(
             )
 
             SecondsInputRow(
-                label = "Ask 通知の遅延",
+                label = "Ask 通知の遅延 (承認)",
                 hint = "PC で即答した場合は通知しない。0 で即時。",
                 value = askDelay,
                 onChange = { askDelay = it },
+            )
+
+            SecondsInputRow(
+                label = "Ask 通知の遅延 (質問)",
+                hint = "AskUserQuestion 用。 PC で選択肢を読む時間を見越して長め推奨 (default 30 秒)。",
+                value = questionAskDelay,
+                onChange = { questionAskDelay = it },
             )
 
             SecondsInputRow(
@@ -183,7 +189,8 @@ private fun NotificationTimingSection(
                 onClick = {
                     val ask = askDelay.toLongOrNull() ?: return@Button
                     val stop = stopThreshold.toLongOrNull() ?: return@Button
-                    onSave(ask, stop)
+                    val q = questionAskDelay.toLongOrNull() ?: return@Button
+                    onSave(ask, stop, q)
                 },
                 enabled = !isSaving && settings != null,
                 modifier = Modifier.fillMaxWidth(),

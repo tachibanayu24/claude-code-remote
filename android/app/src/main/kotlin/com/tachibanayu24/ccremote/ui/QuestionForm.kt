@@ -2,13 +2,16 @@ package com.tachibanayu24.ccremote.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -18,6 +21,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.tachibanayu24.ccremote.data.AskQuestion
 import kotlinx.serialization.json.JsonObject
@@ -26,13 +30,11 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 
 /**
- * AskUserQuestion 用の回答フォーム Composable。 QuestionActivity (通知タップ
- * 経由) と SessionDetailScreen のチャット内インライン (承認 relay と同じ流儀)
- * 両方から再利用される。
- *
- * 内部で選択状態を保持し、 Submit 時に backend に送る形の JsonObject に変換
- * してコールバック。 multiSelect=false → label の string、 multiSelect=true
- * → label の JsonArray。 spike で確定した CC 受理形式。
+ * AskUserQuestion 用の回答フォーム。 SessionDetailScreen の PendingQuestionBlock
+ * に inline で埋め込まれる。 デザインは PendingApprovalBlock と揃えてあって、
+ * Card で二重に浮かさず、 質問本文 + radio/checkbox + Submit ボタンだけの
+ * フラットな見た目。 各 option 行全体が clickable なので、 label 直タップで
+ * 選択が変わる。
  */
 @Composable
 fun QuestionForm(
@@ -46,7 +48,7 @@ fun QuestionForm(
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         questions.forEachIndexed { idx, q ->
-            QuestionCard(
+            QuestionEntry(
                 index = idx,
                 question = q,
                 selected = selections.value[idx] ?: emptySet(),
@@ -57,18 +59,25 @@ fun QuestionForm(
         }
 
         if (error != null) {
-            Text(error, color = MaterialTheme.colorScheme.error)
+            Text(
+                error,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
         }
 
         val canSubmit = !isSubmitting && questions.indices.all { (selections.value[it]?.isNotEmpty()) == true }
         Button(
-            onClick = {
-                onSubmit(buildAnswers(questions, selections.value))
-            },
+            onClick = { onSubmit(buildAnswers(questions, selections.value)) },
             enabled = canSubmit,
+            shape = RoundedCornerShape(8.dp),
+            contentPadding = PaddingValues(vertical = 6.dp, horizontal = 16.dp),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text(if (isSubmitting) "送信中..." else submitLabel)
+            Text(
+                text = if (isSubmitting) "送信中..." else submitLabel,
+                style = MaterialTheme.typography.labelLarge,
+            )
         }
     }
 }
@@ -89,69 +98,95 @@ private fun buildAnswers(
 }
 
 @Composable
-private fun QuestionCard(
+private fun QuestionEntry(
     index: Int,
     question: AskQuestion,
     selected: Set<String>,
     onSelectionChange: (Set<String>) -> Unit,
 ) {
-    Card(
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-        ),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        // header (chip 的役割) と質問本文を 1 行にまとめてコンパクトに。
+        Row(verticalAlignment = Alignment.CenterVertically) {
             if (question.header.isNotBlank()) {
                 Text(
                     text = question.header,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
+                androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
             }
             Text(
                 text = "Q${index + 1}. ${question.question}",
-                style = MaterialTheme.typography.titleSmall,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
             )
+        }
 
-            question.options.forEach { opt ->
-                val isSelected = selected.contains(opt.label)
-                val newSet: () -> Set<String> = {
-                    if (question.multiSelect) {
-                        if (isSelected) selected - opt.label else selected + opt.label
+        question.options.forEach { opt ->
+            OptionRow(
+                option = opt,
+                isSelected = selected.contains(opt.label),
+                multiSelect = question.multiSelect,
+                onClick = {
+                    val newSet = if (question.multiSelect) {
+                        if (selected.contains(opt.label)) selected - opt.label else selected + opt.label
                     } else {
                         setOf(opt.label)
                     }
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (question.multiSelect) {
-                        Checkbox(
-                            checked = isSelected,
-                            onCheckedChange = { onSelectionChange(newSet()) },
-                        )
-                    } else {
-                        RadioButton(
-                            selected = isSelected,
-                            onClick = { onSelectionChange(newSet()) },
-                        )
-                    }
-                    Column(modifier = Modifier.padding(start = 4.dp)) {
-                        Text(opt.label, style = MaterialTheme.typography.bodyLarge)
-                        if (opt.description.isNotBlank()) {
-                            Text(
-                                opt.description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
+                    onSelectionChange(newSet)
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun OptionRow(
+    option: com.tachibanayu24.ccremote.data.AskQuestionOption,
+    isSelected: Boolean,
+    multiSelect: Boolean,
+    onClick: () -> Unit,
+) {
+    // Row 全体に selectable/toggleable を当てて、 label tap でも radio/checkbox
+    // が反応するようにする。 selectable は Role.RadioButton を持ち、
+    // accessibility 表記とリップル挙動が単独 RadioButton と揃う。
+    val rowModifier = if (multiSelect) {
+        Modifier.toggleable(
+            value = isSelected,
+            onValueChange = { onClick() },
+            role = Role.Checkbox,
+        )
+    } else {
+        Modifier.selectable(
+            selected = isSelected,
+            onClick = onClick,
+            role = Role.RadioButton,
+        )
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(rowModifier)
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (multiSelect) {
+            Checkbox(checked = isSelected, onCheckedChange = null)
+        } else {
+            RadioButton(selected = isSelected, onClick = null)
+        }
+        Column(modifier = Modifier.padding(start = 4.dp)) {
+            Text(
+                option.label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            if (option.description.isNotBlank()) {
+                Text(
+                    option.description,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
