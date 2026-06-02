@@ -74,8 +74,17 @@ const mcp = new Server(
       },
     },
     instructions:
-      'cc-remote relays permission prompts to a phone via Cloudflare Workers + FCM. ' +
-      'The local terminal dialog stays open; first responder wins.',
+      // Injected into CC's system prompt. The phone's added instructions reach
+      // CC as channel notifications, which CC wraps as a <channel> tag — so we
+      // must tell the model these are the user speaking, not background events.
+      'cc-remote bridges this Claude Code session to the user\'s phone. ' +
+      'Inbound messages arrive wrapped as <channel source="cc-remote" origin="phone"> ' +
+      'and are instructions the user sent from their phone while away from the terminal. ' +
+      'Treat each one as a direct instruction from the user and act on it exactly as if ' +
+      'they had typed it into the terminal. There is no channel reply tool — the user ' +
+      'follows your progress in a separate app, so just carry out the work. ' +
+      'This server also relays tool-permission prompts to the phone; the local terminal ' +
+      'dialog stays open in parallel and whichever responder answers first wins.',
   },
 )
 
@@ -341,7 +350,10 @@ async function handlePromptEvent(ev) {
   try {
     await mcp.notification({
       method: 'notifications/claude/channel',
-      params: { content: ev.text, meta: { source: 'phone', prompt_id: ev.id } },
+      // CC sets the `source` attribute from our server name ("cc-remote"), so we
+      // use `origin` (not `source`) here to avoid a duplicate tag attribute. Both
+      // keys must be identifier-safe — CC silently drops keys with hyphens etc.
+      params: { content: ev.text, meta: { origin: 'phone', prompt_id: ev.id } },
     })
     // Echo full text — CC's banner truncates long prompts.
     log(`injected prompt ${ev.id}:\n${ev.text}`)
