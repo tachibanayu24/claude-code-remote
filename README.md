@@ -100,10 +100,24 @@ claude --dangerously-load-development-channels server:cc-remote
 エイリアス推奨:
 
 ```bash
-alias claudec='claude --dangerously-load-development-channels server:cc-remote'
+alias claude-rc='claude --dangerously-load-development-channels server:cc-remote'
 ```
 
 `--dangerously-load-development-channels` は Channels research preview の機能で、approved allowlist に載るまで必要。Pro/Max ユーザは claude.ai login + v2.1.81+ で使える。
+
+### ⚠️ 起動時の確認ダイアログ（必須ステップ）
+
+CC v2.1.1xx 以降、`--dangerously-load-development-channels` での起動時に**確認ダイアログ**が出る:
+
+```
+WARNING: Loading development channels
+❯ 1. I am using this for local development
+  2. Exit
+```
+
+**`1`（Enter で確定）を選ばないと channel が登録されず、スマホからの追加指示・承認リレーが一切効かない**（Stop 通知だけは hook 経由なので届くため「通知は来るのにプロンプトが効かない」状態になる）。Esc / Exit を選ぶと未登録のまま起動してしまうので注意。`1` を選ぶと `Listening for channel messages from: server:cc-remote` が表示され、双方向操作が有効になる。
+
+このダイアログは research preview の意図的なセキュリティゲートで、設定での恒久スキップ手段は無い（custom channel を個人アカウントで使う限り毎回必要）。将来 Anthropic 公式 marketplace に登録できれば `--channels plugin:cc-remote@<marketplace>`（dev フラグ不要＝ダイアログ無し）に移行できる。参照: [channels-reference](https://code.claude.com/docs/en/channels-reference)。
 
 ## 設定ファイル
 

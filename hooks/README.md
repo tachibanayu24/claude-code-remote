@@ -1,119 +1,114 @@
-# hooks — PC hook script
+# hooks — PC 側 hook スクリプト
 
-Claude Code が hook イベント（PreToolUse / Stop / Notification）を起こすたびに呼ばれる Node スクリプト。Workers backend に POST して通知 / 承認待ちを処理する。
+Claude Code の hook イベントで起動し、Workers backend に POST する Node スクリプト群。
+追加 npm 依存ゼロ（`fetch` built-in）。
+
+このディレクトリには **2 本の hook スクリプト**がある:
+
+| スクリプト | hook event | モード/役割 |
+|---|---|---|
+| `cc-remote-hook.mjs` | **Stop** / **PostToolUse** | `stop` = 応答完了通知、`posttool` = pending dismiss |
+| `ask-user-question.mjs` | **PermissionRequest** (`AskUserQuestion` matcher) | 質問 (question) を phone にリレーして answers を待つ |
+
+> **承認 (approval) は hook では扱わない。** Bash / Edit / Write 等の permission リレーは
+> 常駐 MCP channel server (`channel/channel.mjs`) が直接処理する。hook が扱うのは
+> 「完了通知」「pending dismiss」「AskUserQuestion (question)」のみ。
+> approval と question の使い分けは [`../CLAUDE.md`](../CLAUDE.md) のドメイン用語、
+> 全体像は [`../docs/architecture.md`](../docs/architecture.md) を参照。
 
 ## 動作要件
 
-- Node.js 18+ （`fetch` が built-in、追加 npm 依存ゼロ）
+- Node.js 18+（`fetch` built-in、npm 依存ゼロ）
 - macOS / Linux
 
 ## セットアップ
 
 ### 1. スクリプトを `~/.claude/hooks/` に配置
 
-シンボリックリンク（リポジトリ更新が即反映される）:
+`lib/` ごとシンボリックリンク（リポジトリ更新が即反映される）が楽:
 
 ```sh
 mkdir -p ~/.claude/hooks
-ln -s "$(pwd)/cc-remote-hook.mjs" ~/.claude/hooks/cc-remote-hook.mjs
-chmod +x cc-remote-hook.mjs
-```
-
-または単純にコピー:
-
-```sh
-mkdir -p ~/.claude/hooks
-cp cc-remote-hook.mjs ~/.claude/hooks/
-chmod +x ~/.claude/hooks/cc-remote-hook.mjs
+ln -s "$(pwd)/cc-remote-hook.mjs"   ~/.claude/hooks/cc-remote-hook.mjs
+ln -s "$(pwd)/ask-user-question.mjs" ~/.claude/hooks/ask-user-question.mjs
+ln -s "$(pwd)/lib"                   ~/.claude/hooks/lib
 ```
 
 ### 2. `.env` を作成
 
 ```sh
 cp .env.example ~/.claude/hooks/.env
-chmod 600 ~/.claude/hooks/.env  # 自分だけ読める権限に
+chmod 600 ~/.claude/hooks/.env   # 自分だけ読める権限に
 $EDITOR ~/.claude/hooks/.env
 ```
 
-中身:
+中身（`backend/.dev.vars` の `SHARED_SECRET` と一致させる）:
 
 ```
 CC_REMOTE_BACKEND_URL=https://claude-code-remote.<your-subdomain>.workers.dev
 CC_REMOTE_SHARED_SECRET=<backend と同じ値>
 ```
 
-`SHARED_SECRET` は `backend/.dev.vars` の `SHARED_SECRET` と同じ値。
-
 ### 3. `~/.claude/settings.json` に hook を登録
-
-既存の `hooks` セクションに以下をマージ（無ければ新規作成）:
 
 ```json
 {
   "hooks": {
-    "PreToolUse": [{
-      "matcher": "Bash|Edit|Write|MultiEdit|mcp__.*",
-      "hooks": [{
-        "type": "command",
-        "command": "node ~/.claude/hooks/cc-remote-hook.mjs pretool",
-        "timeout": 360
-      }]
-    }],
     "Stop": [{
       "hooks": [{
         "type": "command",
-        "command": "node ~/.claude/hooks/cc-remote-hook.mjs stop"
+        "command": "node ~/.claude/hooks/cc-remote-hook.mjs stop",
+        "timeout": 10
       }]
     }],
-    "Notification": [{
+    "PostToolUse": [{
       "hooks": [{
         "type": "command",
-        "command": "node ~/.claude/hooks/cc-remote-hook.mjs notify"
+        "command": "node ~/.claude/hooks/cc-remote-hook.mjs posttool",
+        "timeout": 5
+      }]
+    }],
+    "PermissionRequest": [{
+      "matcher": "AskUserQuestion",
+      "hooks": [{
+        "type": "command",
+        "command": "node ~/.claude/hooks/ask-user-question.mjs",
+        "timeout": 120
       }]
     }]
   }
 }
 ```
 
-`matcher` は承認対象の tool 名にマッチさせる正規表現。デフォルトは Bash / Edit / Write / MultiEdit / 全 MCP tool を承認対象にしている。Read 等の安全 tool は対象外（通知過多回避）。
-
-`timeout` は Claude Code 側の hook タイムアウト（秒）。スクリプト内のポーリングタイムアウト（300秒）より少し長く設定。
+`PermissionRequest` の `matcher` は `AskUserQuestion` 限定。これ以外の tool の permission
+（Bash / Edit / Write 等）は hook ではなく channel server がリレーするので、ここには
+書かない。
 
 ## モードの挙動
 
-| モード | 用途 | 出力 |
+| スクリプト / モード | 用途 | 出力 |
 |---|---|---|
-| `pretool` | PreToolUse hook | stdout に `permissionDecision` の JSON |
-| `stop` | Stop hook（応答完了時） | fire-and-forget の通知送信 |
-| `notify` | Notification hook（待機時） | fire-and-forget の通知送信 |
+| `cc-remote-hook.mjs stop` | Stop hook（応答完了時） | jsonl から最終スナップショットを読み `POST /v1/hook/stop`。閾値判定・通知整形・FCM push・dismiss は backend 側。fire-and-forget |
+| `cc-remote-hook.mjs posttool` | PostToolUse hook | `POST /v1/hook/posttool`。同 session の pending approval / question を session-wide で dismiss（CLI 早勝ち時に phone 通知をクリア）|
+| `ask-user-question.mjs` | PermissionRequest hook（`AskUserQuestion` 発火時） | `POST /v1/questions` → long-poll で answers を待つ → `hookSpecificOutput.decision.updatedInput.answers` を返して CLI ローカル dialog を自動 close。phone 無応答ならタイムアウトで CLI 通常選択に fallback |
 
-### pretool の決定ルート
+`stop` モードは jsonl の `end_turn` 出現を最大 1.5s ポーリングしてから読む（CC の書き込みバッファ
+で最終ナレーションが欠けるのを防ぐ）。詳細は `cc-remote-hook.mjs` の冒頭コメント参照。
 
-1. backend に承認リクエストを POST
-2. 1秒間隔で `/v1/approvals/:id` を最大 5分ポーリング
-3. ステータスが `allow` / `deny` になったら、対応する `permissionDecision` を stdout
-4. タイムアウトしたら `ask` を出力 → Claude Code の通常承認プロンプトに fallback
-5. 設定不備 / backend 到達不能の場合も `ask` で fallback
+## 注意: 起動側の channel ダイアログ
 
-→ スマホ放置・電波なし・backend ダウンでも Claude Code が固まらない設計。
-
-## 動作確認
-
-```sh
-# pretool: stdin に hook event JSON を流す
-echo '{"session_id":"test","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"ls"}}' \
-  | node cc-remote-hook.mjs pretool
-# → stdout に permissionDecision の JSON が出る
-#   （別端末から POST /v1/approvals/:id/respond で allow/deny を返さないと 5分待つ）
-```
+approval リレー / プロンプト注入は channel server (`channel/channel.mjs`) が担うが、
+それは CC を `--dangerously-load-development-channels server:cc-remote` で起動し、
+**起動時の確認ダイアログを `1` で通過した場合のみ**有効。通過しないと channel 未登録で、
+hook 由来の Stop 通知だけが届く状態になる（[`../README.md`](../README.md) 「起動」節を参照）。
 
 ## トラブルシュート
 
-- `cc-remote-hook: cannot read ~/.claude/hooks/.env`
-  → `.env` のパス・読み権限を確認
-- `[cc-remote] config missing`
-  → `.env` の `CC_REMOTE_BACKEND_URL` または `CC_REMOTE_SHARED_SECRET` が空
-- `[cc-remote] backend POST failed: HTTP 401`
-  → `CC_REMOTE_SHARED_SECRET` が backend の `SHARED_SECRET` と一致していない
-- `[cc-remote] スマホで応答がなかったため通常確認に戻します`
-  → タイムアウト fallback。Android アプリの動作確認 or backend 直接 curl で respond
+- `cc-remote-hook: config missing` / `[cc-remote] config missing`
+  → `~/.claude/hooks/.env` の `CC_REMOTE_BACKEND_URL` / `CC_REMOTE_SHARED_SECRET` が空
+- `POST … HTTP 401`
+  → `CC_REMOTE_SHARED_SECRET` が backend の `SHARED_SECRET` と不一致
+- 完了通知が来ない
+  → settings.json の Stop hook 登録、`.env` のパス・権限を確認
+- スマホからのプロンプトが効かない（通知は来る）
+  → 起動時の channel 確認ダイアログを `1` で通過したか確認（最頻の原因）
