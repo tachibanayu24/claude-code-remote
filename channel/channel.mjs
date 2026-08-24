@@ -45,10 +45,11 @@ import {
 
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
 // Long-poll cadence for /v1/wait. The same request also carries the
-// heartbeat snapshot, so wait cadence == heartbeat cadence. Inflight uses a
-// shorter hold so the phone sees `current_blocks` updates with ~5s lag;
-// idle holds longer to keep request count down (CF Workers Free is 100k
-// req/day).
+// heartbeat snapshot; backend 側 (wait.ts) が変化検知 + throttle で実際に
+// D1 に書くかを毎回判定するので、 この周期は「snapshot を届ける頻度の上限」
+// であって書き込み頻度ではない。 Inflight uses a shorter hold so the phone
+// sees `current_blocks` updates quickly; idle holds longer to keep request
+// count down (CF Workers Free is 100k req/day).
 const WAIT_INFLIGHT_MAX_MS = 5_000
 const WAIT_IDLE_MAX_MS = 15_000
 // Network-level timeout: server-side cap + slack for transit + retry hop.
@@ -109,6 +110,32 @@ const PermissionRequestSchema = z.object({
 const pendingApprovals = new Map()
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// ---------- graceful shutdown (bye) ----------
+
+// waitLoop が最後に見た session_id。 終了 path (stdin EOF / SIGTERM) では
+// ppid ファイルがまだ読める保証がないので、 ループ側で控えておく。
+let lastSessionId = null
+// close event で SIGTERM を送った後 true。 waitLoop の heartbeat 送信を止めて
+// bye で倒した row を自分で蘇生させないため。
+let closing = false
+let byeSent = false
+
+/**
+ * Backend への「この channel は終了する」 best-effort 通知。 phone のセッション
+ * 一覧が heartbeat TTL (server 側 180s) の失効を待たずに即 closed に落ちる。
+ * 一度きり + 1.5s cap なので、 ネットワーク死亡時でも終了 path を塞がない。
+ * 失敗しても TTL 失効が fallback として拾う。
+ */
+async function sendBye() {
+  if (byeSent) return
+  byeSent = true
+  const sid = lastSessionId ?? readPpidSession()?.sessionId
+  if (!sid || !isConfigured()) return
+  try {
+    await apiPost(`/v1/sessions/${sid}/bye`, {}, AbortSignal.timeout(1_500))
+  } catch (_) {}
+}
 
 /** Cancel the deferred /notify timer (if any) and drop the entry. */
 function clearPending(backendId) {
@@ -263,6 +290,13 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
 async function waitLoop() {
   let backoffMs = 1_000
   while (true) {
+    if (closing) {
+      // close event で CC に SIGTERM 済み。 まもなく stdin EOF で自分も死ぬ。
+      // これ以上 /v1/wait を叩くと bye で倒した heartbeat を蘇生させてしまう
+      // ので、 何もせず終了を待つ。
+      await sleep(WAIT_BACKOFF_MAX_MS)
+      continue
+    }
     if (!isConfigured()) {
       await sleep(WAIT_BACKOFF_MAX_MS)
       continue
@@ -274,6 +308,7 @@ async function waitLoop() {
       await sleep(2_000)
       continue
     }
+    lastSessionId = snapshot.session_id
     // Early-dismiss path (approval): JSONL の tool_result 出現で CLI 早勝ち
     // 判定。 AskUserQuestion 用の dismiss は PostToolUse hook の
     // dismissPendingQuestionsBySession に一任 (個別 tool_use_id binding が無
@@ -378,8 +413,16 @@ function handleCloseEvent() {
   try {
     process.kill(process.ppid, 'SIGTERM')
   } catch (e) {
+    // CC はまだ生きている — relay を止めず、 bye も送らない (誤って closed
+    // 表示にしない)。
     log(`SIGTERM failed: ${e.message ?? e}`)
+    return
   }
+  // CC はまもなく終了し、 自分も stdin EOF で道連れになる。 waitLoop の
+  // heartbeat を止めた上で bye を送り、 phone の一覧を TTL 失効 (最長 3 分)
+  // を待たず即 closed に落とす。
+  closing = true
+  void sendBye()
 }
 
 /**
@@ -425,10 +468,17 @@ async function handleVerdictEvent(ev) {
 await mcp.connect(new StdioServerTransport())
 log(`connected (backend=${isConfigured() ? 'configured' : 'missing'})`)
 
-// When CC parent dies, stdin closes. Exit so we don't keep the long-poll
-// fetch alive past our usefulness.
-process.stdin.on('end', () => process.exit(0))
-process.stdin.on('close', () => process.exit(0))
+// When CC parent dies, stdin closes. Send the goodbye first (sendBye 内部で
+// 1.5s cap + fire-once) so the phone flips to `closed` immediately, then
+// exit so we don't keep the long-poll fetch alive past our usefulness.
+// SIGTERM / SIGHUP も同じ path — 従来は default action (即死) だったので、
+// bye を挟んでも挙動の後退はない。 SIGINT は触らない (terminal foreground
+// group 経由で届いた場合に CC より先に死ぬべきではないため、 従来挙動を維持)。
+const byeAndExit = () => { sendBye().finally(() => process.exit(0)) }
+process.stdin.on('end', byeAndExit)
+process.stdin.on('close', byeAndExit)
+process.on('SIGTERM', byeAndExit)
+process.on('SIGHUP', byeAndExit)
 
 waitLoop().catch((e) => {
   log(`waitLoop fatal: ${e.message ?? e}`)

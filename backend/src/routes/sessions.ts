@@ -6,10 +6,14 @@ import type { Bindings, SessionRow, TurnRow } from '../types'
 
 const app = new Hono<{ Bindings: Bindings }>()
 
-// channel.mjs heartbeats via /v1/wait at 5–15s cadence (plus exponential
-// backoff up to 30s on errors). 90s gives ~3x headroom — beyond that the
-// channel is genuinely unreachable and the session should be marked closed.
-const SESSION_HEARTBEAT_TTL_SEC = 90
+// channel.mjs は /v1/wait を 5–15s 周期で叩くが、 wait.ts は D1 Free の
+// 書き込み枠節約のため「変化があったとき + 無変化なら 60s ごとの keepalive」
+// しか last_heartbeat を書かない (wait.ts の throttle 定数を参照)。
+// 180s = keepalive 60s + wait 1 round (≤15s) + エラー backoff 1 回 (≤30s)
+// に余裕を載せた値。 これを超えたら channel は本当に死んでいるとみなす。
+// graceful 終了はこの TTL を待たない — channel.mjs が終了時に /:sid/bye を
+// POST して即 closed に落とす。
+const SESSION_HEARTBEAT_TTL_SEC = 180
 const TURNS_DEFAULT_LIMIT = 20
 const TURNS_MAX_LIMIT = 50
 // Window during which delivered prompts are still surfaced to the detail
@@ -189,7 +193,15 @@ app.get('/:sid/turns', async (c) => {
       ai_title: session.ai_title,
       current_prompt: session.current_prompt,
       current_blocks: parseJsonArray(session.current_blocks, `session ${session.session_id} current_blocks`),
-      last_heartbeat: session.last_heartbeat,
+      // Android detail 画面は「now - last_heartbeat < 30s」で入力バーの活性を
+      // 判定する (SessionDetailScreen.kt の SESSION_LIVE_TTL_SEC)。 heartbeat
+      // 書き込みが最長 60s 間隔に間引かれたため生値を返すと生存中でも 30s を
+      // 超えてしまう。 生死判定はサーバ側 TTL に一本化し、 生きていれば now に
+      // クランプして返す (= この field は「liveness シグナル」 に意味変更。
+      // 端末とサーバの clock skew 依存も消える)。 死んでいれば生値のまま。
+      last_heartbeat: nowSec() - session.last_heartbeat <= SESSION_HEARTBEAT_TTL_SEC
+        ? nowSec()
+        : session.last_heartbeat,
       // jsonl_mtime is a fractional ms epoch on macOS; floor for JSON Long
       // consumers (Android).
       jsonl_mtime: session.jsonl_mtime != null ? Math.floor(session.jsonl_mtime) : null,
@@ -199,6 +211,23 @@ app.get('/:sid/turns', async (c) => {
     queued_prompts: queuedPrompts,
     pending_questions: pendingQuestions,
   })
+})
+
+app.post('/:sid/bye', async (c) => {
+  // channel.mjs の graceful shutdown 通知 (CC 終了 = stdin EOF / phone close の
+  // SIGTERM 後)。 keepalive が最長 60s 間隔なので TTL 待ちだと閉じたセッション
+  // が最長 3 分 「生存」 表示のまま残る。 last_heartbeat を TTL より過去に
+  // 倒して即 closed に落とす。 close_requested_at も併せて掃除する — marker が
+  // 立ったまま終了すると `claude --continue` 再開直後の初回 /v1/wait で close
+  // が再発火して即死するため (終了するセッションに対する close 要求は moot)。
+  // row が無い / 既に stale でも成功扱い (best-effort 通知、 冪等)。
+  const sid = c.req.param('sid')
+  if (!sid) return c.json({ error: 'session_id required' }, 400)
+  await c.env.DB.prepare(
+    `UPDATE sessions SET last_heartbeat = ?, close_requested_at = NULL
+     WHERE session_id = ?`,
+  ).bind(nowSec() - SESSION_HEARTBEAT_TTL_SEC - 1, sid).run()
+  return c.json({ ok: true })
 })
 
 app.post('/:sid/close', async (c) => {
